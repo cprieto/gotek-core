@@ -2,8 +2,8 @@
 
 A Rust 2024 library for inspection and empty-image generation of the original
 Gotek slot layout observed in ipcas USB Floppy Emulator Manager / Batch Manage
-Tool V1.40 captures. The library implementation uses only the standard library;
-the existing `tester` inspection binary uses `clap`. The format evidence is in [GOTEK_FORMAT_SPEC.md](GOTEK_FORMAT_SPEC.md).
+Tool V1.40 captures. Read-only file access uses `fatfs`; the optional `gotek`
+CLI uses `clap`. The format evidence is in [GOTEK_FORMAT_SPEC.md](GOTEK_FORMAT_SPEC.md).
 
 ```rust,no_run
 use std::fs::File;
@@ -60,7 +60,7 @@ Validation policy:
 This is a boot-sector and metadata inspector, **not a filesystem integrity
 checker**: it does not read FAT contents, directory labels, files, gap fill, or
 bytes after the boundary sector. It does not certify hardware compatibility.
-Empty-image formatting is described below. File management is not implemented.
+Empty-image formatting and read-only file access are described below.
 
 The observations establish 50- and 100-slot count encodings. Accepting other
 counts from 1–100, including `001`, generalizes the specified three-digit rule;
@@ -197,3 +197,51 @@ regular-file and capacity checks and shares the initialization engine with
 `format_image`. `format_image` still requires an empty destination, and
 `create_image` still refuses existing paths. Clap remains optional and confined
 to the CLI. Run `cargo test --features cli` to include the command-level tests.
+
+## Reading files inside a slot
+
+```rust,no_run
+use gotek_core::{list_files, read_file};
+let mut image = std::fs::File::open("image.img")?;
+for entry in list_files(&mut image, 5)? {
+    println!("{} {} {:02x}", entry.name, entry.size, entry.attributes);
+}
+assert_eq!(read_file(&mut image, 5, "hello.txt.txt")?, b"hola!");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+```sh
+cargo run --features cli -- ls image.img --slot 5
+cargo run --features cli -- cat image.img --slot 5 hello.txt.txt
+```
+
+Slots are zero-based and checked against slot zero's `MAX BLOCK` record. Only
+the chosen slot's BPB is validated; unrelated slots and the boundary copy need
+not be readable. `list_files` returns the root's files and directories, omitting
+volume labels. It reports VFAT names, byte sizes, and raw FAT attribute bits.
+`read_file` supports slash-separated relative paths and ASCII case-insensitive
+long or short names. `cat` writes exact binary bytes without an added newline;
+`ls` prints hexadecimal attributes, size, and name separated by tabs.
+
+The private adapter uses the existing fixed-stride layout and BPB parser, and
+bounds every FAT read and seek to the BPB-defined payload. Gotek metadata and
+the gap are never exposed to `fatfs`. Both APIs require only `Read + Seek`;
+they work with regular macOS/Linux files and memory readers. Although `fatfs`
+0.3.6 requires a `Write` implementation, the adapter rejects every write without
+forwarding it. Access-date updates are disabled. Errors from `fatfs` use
+`GotekError::Io` with the selected volume's absolute start as context.
+
+All three generated geometries mount and support long filenames and nested
+file reads, including the 1.2 MB profile's final incomplete cluster. `fatfs`
+is not an integrity checker: mounting does not validate every FAT entry, compare
+FAT copies, or prove chains are acyclic. A cyclic chain can repeat data within a
+file's declared length. Malformed VFAT names may fall back to short names, and
+non-ASCII case folding is not provided by this API. File reads reject sizes
+larger than the payload and short chains; directory traversal has a volume-sized
+entry budget. No repair, file modification, or metadata update is implemented.
+
+Generated tests cover empty roots, long names, nested binary files, invalid
+slots, corrupt BPBs/FAT chains, truncation, adapter bounds, and byte-for-byte
+source preservation. CLI tests use a regular read-only image file. The optional
+`image03.img` test reads the actual ipcas import (`hello.txt.txt`, `hola!`) when
+the private capture is available; absent captures are skipped with a diagnostic.

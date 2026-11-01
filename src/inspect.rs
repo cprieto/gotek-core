@@ -193,7 +193,7 @@ pub fn inspect<R: Read + Seek + ?Sized>(reader: &mut R) -> Result<GotekImageInfo
     })
 }
 
-fn read_sector<R: Read + Seek + ?Sized>(
+pub(crate) fn read_sector<R: Read + Seek + ?Sized>(
     reader: &mut R,
     offset: u64,
 ) -> Result<[u8; SECTOR_BYTES], GotekError> {
@@ -208,7 +208,7 @@ fn read_sector<R: Read + Seek + ?Sized>(
     Ok(sector)
 }
 
-fn detect_geometry(bpb: &Bpb, offset: u64) -> Result<FloppyGeometry, GotekError> {
+pub(crate) fn detect_geometry(bpb: &Bpb, offset: u64) -> Result<FloppyGeometry, GotekError> {
     let payload_bytes = bpb.payload_bytes()?;
     FloppyGeometry::from_payload_bytes(payload_bytes).ok_or(GotekError::UnsupportedGeometry {
         offset,

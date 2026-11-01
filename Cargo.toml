@@ -16,6 +16,7 @@ include = [
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"], optional = true }
+fatfs = "0.3.6"
 
 [features]
 cli = ["dep:clap"]

@@ -6,7 +6,7 @@ use gotek_core::{
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +19,20 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// List a slot's root directory (read-only).
+    Ls {
+        image: PathBuf,
+        /// Zero-based slot number.
+        #[arg(long)]
+        slot: u16,
+    },
+    /// Write a slot file's exact bytes to stdout (read-only).
+    Cat {
+        image: PathBuf,
+        #[arg(long)]
+        slot: u16,
+        filename: String,
+    },
     /// Inspect an existing Gotek image or device (read-only).
     Inspect {
         /// Image file or block device to inspect.
@@ -62,6 +76,19 @@ impl From<FloppySize> for FloppyGeometry {
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
+        Command::Ls { image, slot } => {
+            for entry in gotek_core::list_files(&mut File::open(image)?, slot)? {
+                println!("{:02x}\t{}\t{}", entry.attributes, entry.size, entry.name);
+            }
+        }
+        Command::Cat {
+            image,
+            slot,
+            filename,
+        } => {
+            let bytes = gotek_core::read_file(&mut File::open(image)?, slot, &filename)?;
+            io::stdout().lock().write_all(&bytes)?;
+        }
         Command::Inspect { path } => {
             let mut image = File::open(&path)?;
             let info = inspect(&mut image)?;

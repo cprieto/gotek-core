@@ -1,11 +1,13 @@
 use std::{fmt, io};
 
-/// A failure during inspection or empty-image formatting.
+/// A failure during inspection, filesystem access, or image formatting.
 #[derive(Debug)]
 pub enum GotekError {
+    /// A zero-based slot index is outside the image's declared count.
+    InvalidSlot { index: u16, count: u16 },
     /// An I/O operation failed at this absolute byte offset.
     Io {
-        /// Requested read/write position, or zero when querying the destination.
+        /// Requested position, volume start for filesystem errors, or zero for destination queries.
         offset: u64,
         /// Underlying error (including `UnexpectedEof` for truncation).
         source: io::Error,
@@ -48,6 +50,9 @@ pub enum GotekError {
 impl fmt::Display for GotekError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidSlot { index, count } => {
+                write!(formatter, "slot {index} is outside 0..{count}")
+            }
             Self::Io { offset, source } => write!(formatter, "I/O at byte {offset:#x}: {source}"),
             Self::InvalidBpb { offset, reason } => {
                 write!(formatter, "invalid BPB at {offset:#x}: {reason}")
