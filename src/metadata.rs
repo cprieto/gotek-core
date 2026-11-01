@@ -71,7 +71,7 @@ fn decimal(bytes: &[u8]) -> Option<u16> {
     })
 }
 
-fn parse_update(record: &[u8]) -> Option<UpdateTime> {
+pub(crate) fn parse_update(record: &[u8]) -> Option<UpdateTime> {
     if &record[..12] != UPDATE_PREFIX || record[31] != 0 {
         return None;
     }

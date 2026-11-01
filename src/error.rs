@@ -1,11 +1,11 @@
 use std::{fmt, io};
 
-/// A failure that prevents reliable inspection. Convention differences are warnings.
+/// A failure during inspection or empty-image formatting.
 #[derive(Debug)]
 pub enum GotekError {
-    /// A seek or exact sector read failed at this absolute byte offset.
+    /// An I/O operation failed at this absolute byte offset.
     Io {
-        /// Requested sector offset.
+        /// Requested read/write position, or zero when querying the destination.
         offset: u64,
         /// Underlying error (including `UnexpectedEof` for truncation).
         source: io::Error,
@@ -28,6 +28,10 @@ pub enum GotekError {
     InvalidCountRecord,
     /// A syntactically valid count is outside 1–100.
     InvalidSlotCount(u16),
+    /// Formatting inputs or a calculated write boundary are invalid.
+    InvalidFormatOptions(&'static str),
+    /// Formatting requires an empty destination; no bytes have been written.
+    OutputNotEmpty(u64),
     /// An offset or size cannot be represented.
     ArithmeticOverflow,
 }
@@ -52,6 +56,13 @@ impl fmt::Display for GotekError {
             Self::InvalidSlotCount(count) => {
                 write!(formatter, "slot count {count} is outside 1–100")
             }
+            Self::InvalidFormatOptions(reason) => {
+                write!(formatter, "invalid format options: {reason}")
+            }
+            Self::OutputNotEmpty(length) => write!(
+                formatter,
+                "format destination must be empty, found {length} bytes"
+            ),
             Self::ArithmeticOverflow => formatter.write_str("offset or size arithmetic overflow"),
         }
     }

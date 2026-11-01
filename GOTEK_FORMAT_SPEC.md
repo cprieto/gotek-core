@@ -77,7 +77,15 @@ All use 512-byte sectors, one reserved sector, two FAT copies, two heads, and 80
 - The gap from payload end up to the metadata sector is zero in all zero-baseline captures.
 - Boot code is present even with the ipcas **DOS bootable** option unchecked.
 
-The exact boot-code template and FAT12 initialization patterns should be preserved from the reference images or documented golden fixtures rather than recreated from a generic FAT formatter without comparison.
+**Gotek Core implementation policy:** the captured executable boot code is not
+redistributed. Empty-image boot sectors are generated from scratch with the
+observed BPB/extended BPB values and an original diagnostic stub that displays
+`Non-system disk` and waits indefinitely. See `src/boot/README.md`. FAT12
+initialization patterns remain validated against format-data fixtures and optional
+private captures. Executable-region bytes `[62,510)` intentionally differ in slot
+boot sectors and the boundary copy; no other established fields are excluded
+from comparisons. Whether changing that code affects firmware or ipcas remains
+untested.
 
 ## 5. Per-slot metadata (observed)
 

@@ -3,3 +3,8 @@
 # Local forensic captures are large and must not be committed.
 /image*.img
 .idea
+
+# Private research reports contain captured executable hex dumps.
+/GOTEK_*_ANALYSIS.md
+/GOTEK_FORMAT_RESEARCH.md
+/GOTEK_IMAGE_COMPARISON.md
