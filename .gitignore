@@ -1,0 +1,5 @@
+/target
+
+# Local forensic captures are large and must not be committed.
+/image*.img
+.idea
