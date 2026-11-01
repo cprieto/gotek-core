@@ -172,3 +172,28 @@ Future complete floppy-image import will let users supply their own bootable
 boot sector and filesystem; that feature is not implemented here. Original Gotek
 firmware and ipcas compatibility, including their handling of this changed boot
 code, remain unverified until independently tested.
+
+## Reinitializing an existing image with the CLI
+
+```sh
+cargo run --features cli -- init gotek-test01.img --floppies 50 --size 1.44m --force
+```
+
+Without `--force`, `init` continues to refuse every existing path. With `--force`,
+it can overwrite an existing regular image file; missing paths still create a new
+image. Directories, symlinks (including dangling links), block devices, and other
+special files are rejected. The opened file handle is also checked before writing.
+
+Existing files must already contain at least `floppies * 0x180000 + 512` bytes,
+including the boundary sector. The fixed stride makes this required length the
+same for all three supported geometries. All formatting inputs and capacity are
+validated before any writes. The file is never truncated or extended, and bytes
+after the new boundary sector are preserved, including any old trailing slot data.
+An I/O failure can leave a partially reinitialized prefix. Avoid concurrent writes
+or resizing while formatting.
+
+The core's `format_existing_image(&mut File, &FormatOptions)` implements the
+regular-file and capacity checks and shares the initialization engine with
+`format_image`. `format_image` still requires an empty destination, and
+`create_image` still refuses existing paths. Clap remains optional and confined
+to the CLI. Run `cargo test --features cli` to include the command-level tests.

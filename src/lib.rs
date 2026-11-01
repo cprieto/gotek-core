@@ -3,8 +3,9 @@
 //! Offsets are relative to byte zero of the supplied source. No mounting or device
 //! discovery is performed. This inspector checks boot sectors and metadata, not FAT
 //! chains, directory contents, or file integrity. Recognition does not certify hardware
-//! compatibility. The formatter targets newly created regular image files; use
-//! [`create_image`] to refuse existing paths. No raw-device formatting is provided.
+//! compatibility. Formatting targets regular image files: [`create_image`] refuses
+//! existing paths; [`format_existing_image`] preserves an existing file's length.
+//! No raw-device formatting is provided.
 //! See `GOTEK_FORMAT_SPEC.md` for evidence and remaining uncertainties.
 
 mod error;
@@ -17,7 +18,8 @@ pub mod metadata;
 
 pub use error::GotekError;
 pub use format::{
-    FormatOptions, SlotFormatOptions, create_image, format_image, generate_boot_sector,
+    FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
+    generate_boot_sector,
 };
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,

@@ -1,6 +1,6 @@
 //! Deterministic empty-image generation for the observed ipcas profiles.
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::Path,
 };
@@ -214,11 +214,48 @@ pub fn format_image<W: Write + Seek + ?Sized>(
     if length != 0 {
         return Err(GotekError::OutputNotEmpty(length));
     }
+    write_prepared_image(writer, image_size, &prepared_slots)
+}
+
+/// Reinitialize an existing regular image file without changing its total size.
+///
+/// The file must be opened for writing without append mode or truncation. All
+/// options, the opened file type, and its capacity are checked before any writes.
+/// Capacity includes the extra boundary sector: `slot_count * stride + 512`.
+/// Bytes after that sector are preserved. This shares the initialization engine
+/// with [`format_image`], which continues to require an empty destination.
+///
+/// Devices and other non-regular files are rejected. The caller must prevent
+/// concurrent file changes during formatting. An I/O failure can leave a partial
+/// image; successful writes are flushed but not synchronized to durable storage.
+pub fn format_existing_image(image: &mut File, options: &FormatOptions) -> Result<(), GotekError> {
+    let image_size = options.image_size_bytes()?;
+    let prepared_slots = prepare_slots(options)?;
+    let metadata = image
+        .metadata()
+        .map_err(|source| GotekError::Io { offset: 0, source })?;
+    if !metadata.is_file() {
+        return Err(GotekError::NotRegularFile);
+    }
+    if metadata.len() < image_size {
+        return Err(GotekError::ImageTooSmall {
+            actual_bytes: metadata.len(),
+            required_bytes: image_size,
+        });
+    }
+    write_prepared_image(image, image_size, &prepared_slots)
+}
+
+fn write_prepared_image<W: Write + Seek + ?Sized>(
+    writer: &mut W,
+    image_size: u64,
+    prepared_slots: &[PreparedSlot],
+) -> Result<(), GotekError> {
     writer
         .seek(SeekFrom::Start(0))
         .map_err(|source| GotekError::Io { offset: 0, source })?;
     let mut position = 0;
-    for slot in &prepared_slots {
+    for slot in prepared_slots {
         write_bytes(writer, &mut position, image_size, &slot.boot_sector)?;
         for _ in 0..2 {
             write_bytes(

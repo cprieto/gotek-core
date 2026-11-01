@@ -685,3 +685,26 @@ fn generated_boot_code_is_original_consistent_and_reached_by_the_jump() {
         }
     }
 }
+
+#[test]
+fn existing_image_rejects_invalid_options_before_modifying_the_file() {
+    let mut image = TemporaryImage::new();
+    image.file().write_all(b"original bytes").unwrap();
+    let mut options = options(FloppyGeometry::Kb720, 2);
+    options.slots[1].update_time.month = 0;
+    assert!(matches!(
+        gotek_core::format_existing_image(image.file(), &options),
+        Err(GotekError::InvalidFormatOptions(_))
+    ));
+    assert_eq!(fs::read(&image.path).unwrap(), b"original bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_image_checks_the_opened_handle_is_regular() {
+    let mut special = File::open("/dev/null").unwrap();
+    assert!(matches!(
+        gotek_core::format_existing_image(&mut special, &options(FloppyGeometry::Kb720, 1)),
+        Err(GotekError::NotRegularFile)
+    ));
+}

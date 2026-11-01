@@ -32,6 +32,15 @@ pub enum GotekError {
     InvalidFormatOptions(&'static str),
     /// Formatting requires an empty destination; no bytes have been written.
     OutputNotEmpty(u64),
+    /// Existing-image formatting only accepts regular files; no bytes were written.
+    NotRegularFile,
+    /// An existing image cannot hold the requested slots and boundary sector.
+    ImageTooSmall {
+        /// Existing file length in bytes.
+        actual_bytes: u64,
+        /// Minimum required length, including the boundary sector.
+        required_bytes: u64,
+    },
     /// An offset or size cannot be represented.
     ArithmeticOverflow,
 }
@@ -62,6 +71,16 @@ impl fmt::Display for GotekError {
             Self::OutputNotEmpty(length) => write!(
                 formatter,
                 "format destination must be empty, found {length} bytes"
+            ),
+            Self::NotRegularFile => {
+                formatter.write_str("format destination must be a regular image file")
+            }
+            Self::ImageTooSmall {
+                actual_bytes,
+                required_bytes,
+            } => write!(
+                formatter,
+                "image is too small: {actual_bytes} bytes available, {required_bytes} bytes required"
             ),
             Self::ArithmeticOverflow => formatter.write_str("offset or size arithmetic overflow"),
         }
