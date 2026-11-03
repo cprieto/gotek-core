@@ -206,3 +206,205 @@ fn cli_lists_and_emits_exact_bytes_from_regular_read_only_file() {
     assert_eq!(fs::read(&path).unwrap(), *image.get_ref());
     fs::remove_file(path).unwrap();
 }
+
+struct ExtractionDir(std::path::PathBuf);
+
+impl ExtractionDir {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "gotek-extraction-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for ExtractionDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn extraction_preserves_bytes_refuses_overwrites_and_reports_errors() {
+    use gotek_core::extract_file;
+    use std::{fs, io::ErrorKind};
+    let directory = ExtractionDir::new();
+    let geometry = FloppyGeometry::Mb1440;
+    let mut image = image(geometry);
+    populate(&mut image, geometry);
+    let before = image.get_ref().clone();
+    for (name, expected) in [
+        ("hello.txt.txt", b"hola!".as_slice()),
+        ("folder/binary.dat", &[0, 255, 10]),
+    ] {
+        let output = directory.0.join(name.rsplit('/').next().unwrap());
+        extract_file(&mut image, 1, name, &output).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), expected);
+        assert!(matches!(
+            extract_file(&mut image, 1, name, &output),
+            Err(GotekError::DestinationIo { source, .. }) if source.kind() == ErrorKind::AlreadyExists
+        ));
+        assert_eq!(fs::read(&output).unwrap(), expected);
+    }
+    let missing = directory.0.join("not-created");
+    assert!(matches!(
+        extract_file(&mut image, 1, "missing", &missing),
+        Err(GotekError::Io { source, .. }) if source.kind() == ErrorKind::NotFound
+    ));
+    assert!(!missing.exists());
+    assert!(matches!(
+        extract_file(&mut image, 2, "hello.txt.txt", &missing),
+        Err(GotekError::InvalidSlot { .. })
+    ));
+    assert!(!missing.exists());
+    let nested = directory.0.join("absent/output");
+    let error = extract_file(&mut image, 1, "hello.txt.txt", &nested).unwrap_err();
+    assert!(matches!(&error, GotekError::DestinationIo { path, source }
+        if path == &nested && source.kind() == ErrorKind::NotFound));
+    assert!(error.to_string().contains("absent/output"));
+    assert!(!directory.0.join("absent").exists());
+    assert!(matches!(
+        extract_file(&mut image, 1, "hello.txt.txt", &directory.0),
+        Err(GotekError::DestinationIo { .. })
+    ));
+    assert_eq!(image.get_ref(), &before);
+}
+
+#[cfg(feature = "cli")]
+#[test]
+fn cli_extract_defaults_explicit_paths_force_and_source_safety() {
+    use std::{fs, process::Command};
+    let directory = ExtractionDir::new();
+    let geometry = FloppyGeometry::Kb720;
+    let mut image = image(geometry);
+    populate(&mut image, geometry);
+    let source = directory.0.join("source.img");
+    fs::write(&source, image.get_ref()).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_gotek"))
+            .current_dir(&directory.0)
+            .args(["extract", "source.img", "--slot", "1"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let result = run(&["hello.txt.txt"]);
+    assert!(result.status.success(), "{result:?}");
+    assert!(result.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Extracted"));
+    assert_eq!(
+        fs::read(directory.0.join("hello.txt.txt")).unwrap(),
+        b"hola!"
+    );
+    fs::write(directory.0.join("hello.txt.txt"), b"keep").unwrap();
+    assert!(!run(&["hello.txt.txt"]).status.success());
+    assert_eq!(
+        fs::read(directory.0.join("hello.txt.txt")).unwrap(),
+        b"keep"
+    );
+    assert!(run(&["hello.txt.txt", "--force"]).status.success());
+    assert_eq!(
+        fs::read(directory.0.join("hello.txt.txt")).unwrap(),
+        b"hola!"
+    );
+    assert!(run(&["folder/binary.dat"]).status.success());
+    assert_eq!(
+        fs::read(directory.0.join("binary.dat")).unwrap(),
+        [0, 255, 10]
+    );
+    assert!(
+        run(&["folder/binary.dat", "--output", "custom.bin"])
+            .status
+            .success()
+    );
+    fs::write(directory.0.join("custom.bin"), b"longer previous contents").unwrap();
+    assert!(
+        !run(&["folder/binary.dat", "--output", "custom.bin"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["folder/binary.dat", "--output", "custom.bin", "--force"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(directory.0.join("custom.bin")).unwrap(),
+        [0, 255, 10]
+    );
+    for name in [
+        "",
+        ".",
+        "..",
+        "folder/",
+        "../hello.txt.txt",
+        "/hello.txt.txt",
+        "folder/..",
+        "C:\\escape",
+    ] {
+        let result = run(&[name, "--force"]);
+        assert!(!result.status.success(), "accepted {name:?}");
+        assert!(result.stdout.is_empty());
+    }
+    for args in [
+        vec!["missing", "--output", "missing.txt"],
+        vec!["hello.txt.txt", "--slot", "2"],
+        vec!["hello.txt.txt", "--output", "absent/output"],
+        vec!["hello.txt.txt", "--output", ".", "--force"],
+        vec!["hello.txt.txt", "--output", "source.img", "--force"],
+    ] {
+        let result = run(&args);
+        assert!(!result.status.success(), "{args:?}");
+        assert!(result.stdout.is_empty());
+    }
+    let result = run(&["missing", "--output", "custom.bin", "--force"]);
+    assert!(!result.status.success());
+    assert_eq!(
+        fs::read(directory.0.join("custom.bin")).unwrap(),
+        [0, 255, 10]
+    );
+    assert!(fs::read_dir(&directory.0).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".gotek-extract-")
+    }));
+    assert!(!directory.0.join("missing.txt").exists());
+    assert_eq!(fs::read(&source).unwrap(), *image.get_ref());
+}
+
+#[cfg(all(feature = "cli", unix))]
+#[test]
+fn extraction_symlinks_and_hard_links_do_not_modify_source() {
+    use std::{fs, os::unix::fs::symlink, process::Command};
+    let directory = ExtractionDir::new();
+    let geometry = FloppyGeometry::Kb720;
+    let mut image = image(geometry);
+    populate(&mut image, geometry);
+    let source = directory.0.join("source.img");
+    let link = directory.0.join("link");
+    fs::write(&source, image.get_ref()).unwrap();
+    symlink(&source, &link).unwrap();
+    assert!(gotek_core::extract_file(&mut image, 1, "hello.txt.txt", &link).is_err());
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_gotek"))
+            .arg("extract")
+            .arg(&source)
+            .args(["--slot", "1", "hello.txt.txt", "--force", "--output"])
+            .arg(&link)
+            .output()
+            .unwrap()
+    };
+    assert!(!run().status.success());
+    fs::remove_file(&link).unwrap();
+    fs::hard_link(&source, &link).unwrap();
+    assert!(run().status.success());
+    assert_eq!(fs::read(&link).unwrap(), b"hola!");
+    assert_eq!(fs::read(&source).unwrap(), *image.get_ref());
+}

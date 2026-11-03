@@ -9,7 +9,7 @@
 //! - [`create_image`] creates an empty image without replacing an existing path.
 //!   [`format_existing_image`] reinitializes a regular file, preserving its length.
 //! - [`list_files`] lists a slot's root; [`read_file`] reads relative FAT paths.
-//!   Both provide bounded, read-only access through `fatfs`.
+//!   [`extract_file`] saves a file to a new destination. These provide bounded, read-only access through `fatfs`.
 //!
 //! Readers implement [`std::io::Read`] + [`std::io::Seek`], with slot zero at byte
 //! zero. No mounting or device discovery is performed. Inspection and file access
@@ -27,7 +27,7 @@
 //! ```
 //!
 //! The library is available without optional features. The `cli` feature adds the
-//! `gotek` executable (`inspect`, `init`, `ls`, `cat`) and its `clap` dependency.
+//! `gotek` executable (`inspect`, `init`, `ls`, `cat`, `extract`) and its `clap` dependency.
 //! See the [format specification](https://github.com/cprieto/gotek-core/blob/main/GOTEK_FORMAT_SPEC.md)
 //! for capture evidence and unresolved firmware questions.
 
@@ -41,7 +41,7 @@ pub mod layout;
 pub mod metadata;
 
 pub use error::GotekError;
-pub use files::{FileInfo, list_files, read_file};
+pub use files::{FileInfo, extract_file, list_files, read_file};
 pub use format::{
     FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
     generate_boot_sector,

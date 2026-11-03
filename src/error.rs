@@ -1,8 +1,15 @@
-use std::{fmt, io};
+use std::{fmt, io, path::PathBuf};
 
 /// A failure during inspection, filesystem access, or image formatting.
 #[derive(Debug)]
 pub enum GotekError {
+    /// Extraction failed while creating or writing the destination.
+    DestinationIo {
+        /// Destination path supplied by the caller.
+        path: PathBuf,
+        /// Underlying filesystem error.
+        source: io::Error,
+    },
     /// A zero-based slot index is outside the image's declared count.
     InvalidSlot { index: u16, count: u16 },
     /// An I/O operation failed at this absolute byte offset.
@@ -50,6 +57,9 @@ pub enum GotekError {
 impl fmt::Display for GotekError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DestinationIo { path, source } => {
+                write!(formatter, "destination {}: {source}", path.display())
+            }
             Self::InvalidSlot { index, count } => {
                 write!(formatter, "slot {index} is outside 0..{count}")
             }
@@ -95,7 +105,7 @@ impl fmt::Display for GotekError {
 impl std::error::Error for GotekError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::Io { source, .. } | Self::DestinationIo { source, .. } => Some(source),
             _ => None,
         }
     }

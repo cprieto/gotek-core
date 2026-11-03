@@ -19,6 +19,19 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Save a slot file to disk without modifying the image.
+    Extract {
+        image: PathBuf,
+        #[arg(long)]
+        slot: u16,
+        filename: String,
+        /// Destination path (defaults to the FAT filename's basename).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Replace an existing destination file.
+        #[arg(long)]
+        force: bool,
+    },
     /// List a slot's root directory (read-only).
     Ls {
         image: PathBuf,
@@ -76,6 +89,23 @@ impl From<FloppySize> for FloppyGeometry {
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
+        Command::Extract {
+            image,
+            slot,
+            filename,
+            output,
+            force,
+        } => {
+            let destination = match output {
+                Some(path) => path,
+                None => default_destination(&filename)?,
+            };
+            let result = extract_to_path(&image, slot, &filename, &destination, force);
+            result.map_err(|error| {
+                io::Error::other(format!("extract to {}: {error}", destination.display()))
+            })?;
+            eprintln!("Extracted {filename} to {}", destination.display());
+        }
         Command::Ls { image, slot } => {
             for entry in gotek_core::list_files(&mut File::open(image)?, slot)? {
                 println!("{:02x}\t{}\t{}", entry.attributes, entry.size, entry.name);
@@ -128,6 +158,85 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn default_destination(filename: &str) -> io::Result<PathBuf> {
+    let name = filename.rsplit('/').next().unwrap_or_default();
+    // Reject separators and platform prefixes as well as dot components on every OS.
+    if name.is_empty() || name == "." || name == ".." || name.contains(['\\', ':']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsafe default destination name; specify --output",
+        ));
+    }
+    Ok(PathBuf::from(name))
+}
+
+fn extract_to_path(
+    image: &Path,
+    slot: u16,
+    filename: &str,
+    destination: &Path,
+    force: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut source = File::open(image)?;
+    if !force || !destination.try_exists()? {
+        gotek_core::extract_file(&mut source, slot, filename, destination)?;
+        return Ok(());
+    }
+    if !fs::symlink_metadata(destination)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--force requires a regular destination file",
+        )
+        .into());
+    }
+    if fs::canonicalize(image)? == fs::canonicalize(destination)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination must not be the source image",
+        )
+        .into());
+    }
+    // Replace the directory entry instead of truncating its inode: even a hard
+    // link to the source image cannot cause source writes. Stage in the same
+    // directory so rename stays on the same filesystem.
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    for attempt in 0..1000 {
+        let temporary = parent.join(format!(
+            ".gotek-extract-{}-{attempt}.tmp",
+            std::process::id()
+        ));
+        match gotek_core::extract_file(&mut source, slot, filename, &temporary) {
+            Err(gotek_core::GotekError::DestinationIo { source, .. })
+                if source.kind() == io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(error) => {
+                if matches!(error, gotek_core::GotekError::DestinationIo { .. }) {
+                    let _ = fs::remove_file(&temporary);
+                }
+                return Err(error.into());
+            }
+            Ok(()) => {
+                let result = fs::rename(&temporary, destination);
+                if result.is_err() {
+                    let _ = fs::remove_file(&temporary);
+                }
+                result?;
+                return Ok(());
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "cannot allocate extraction temporary file",
+    )
+    .into())
 }
 
 // Check the path before opening it so special files (notably FIFOs) are not

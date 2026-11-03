@@ -14,7 +14,7 @@ without mounting the image.
   validation errors and warnings.
 - Create empty images with 1–100 slots using **720K, 1.2 MB, or 1.44 MB** geometry.
 - Reinitialize existing regular image files while preserving their total size.
-- List FAT12 root directories and read files, including VFAT long names and
+- List FAT12 root directories, read and extract files, including VFAT long names and
   nested paths, without modifying the source.
 - Use files or other `Read + Seek` sources, including in-memory buffers.
 
@@ -67,13 +67,13 @@ fn main() -> Result<(), gotek_core::GotekError> {
 `create_image` refuses to replace an existing path. Supply serials and timestamps
 explicitly; edit `options.slots` to use different values for individual slots.
 
-### List and read files
+### List, read, and extract files
 
 Slot numbers are zero-based. This example expects `docs/readme.txt` in slot 5
 of an existing image:
 
 ```rust,no_run
-use gotek_core::{list_files, read_file};
+use gotek_core::{extract_file, list_files, read_file};
 use std::fs::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -83,12 +83,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let bytes = read_file(&mut image, 5, "docs/readme.txt")?;
     println!("{}", String::from_utf8_lossy(&bytes));
+    extract_file(&mut image, 5, "docs/readme.txt", "readme.txt")?;
     Ok(())
 }
 ```
 
 `list_files` lists root files and directories. `read_file` returns exact bytes
 and accepts slash-separated relative paths and ASCII case-insensitive names.
+`extract_file` saves exact bytes to a new file; it refuses existing destinations
+and requires parent directories to exist.
 
 ## Optional CLI
 
@@ -111,16 +114,25 @@ gotek inspect image.img
 # Create a new image with 50 empty 1.44 MB floppy slots.
 gotek init new-image.img --floppies 50 --size 1.44m
 
-# List slot 5, then extract a file from an image containing it.
+# List slot 5 and print a file to stdout.
 gotek ls image.img --slot 5
-gotek cat image.img --slot 5 docs/readme.txt > extracted.txt
+gotek cat image.img --slot 5 docs/readme.txt
+
+# Save a file using its basename, or choose an output path.
+gotek extract image.img --slot 5 docs/readme.txt
+gotek extract image.img --slot 5 docs/readme.txt --output output.txt
+gotek extract image.img --slot 5 docs/readme.txt --output output.txt --force
 
 # Reinitialize an existing image (destructive: back it up first).
 gotek init new-image.img --floppies 50 --size 1.44m --force
 ```
 
 `--size` accepts `720k`, `1.2m`, and `1.44m`. `cat` writes binary bytes to stdout
-without adding a newline. CLI initialization currently uses fixed serial
+without adding a newline; `extract` saves them to disk. Extraction refuses to
+overwrite existing files unless `--force` is specified, which applies only to
+the destination. Parent directories must already exist.
+
+CLI initialization currently uses fixed serial
 `0x12345678` and timestamp `2026-11-01 12:00:00`; use the library for custom values.
 
 Without `--force`, initialization refuses existing paths. With `--force`, it
