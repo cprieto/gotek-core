@@ -408,3 +408,154 @@ fn extraction_symlinks_and_hard_links_do_not_modify_source() {
     assert_eq!(fs::read(&link).unwrap(), b"hola!");
     assert_eq!(fs::read(&source).unwrap(), *image.get_ref());
 }
+
+#[test]
+fn import_round_trip_and_slot_boundaries() {
+    use gotek_core::{extract_file, import_file};
+    use std::fs;
+    let dir = ExtractionDir::new();
+    let image_path = dir.0.join("image.img");
+    let source = dir.0.join("binary.dat");
+    let output = dir.0.join("out.dat");
+    let bytes = [0, 255, 1, 0, 42];
+    let original = image(FloppyGeometry::Mb1440).into_inner();
+    fs::write(&image_path, &original).unwrap();
+    fs::write(&source, bytes).unwrap();
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 3,
+        hour: 9,
+        minute: 10,
+        second: 11,
+    };
+    import_file(
+        &image_path,
+        1,
+        &source,
+        Some("A long name.dat"),
+        false,
+        time,
+    )
+    .unwrap();
+    let changed = fs::read(&image_path).unwrap();
+    assert_eq!(
+        &changed[..SLOT_STRIDE_BYTES as usize],
+        &original[..SLOT_STRIDE_BYTES as usize]
+    );
+    assert_eq!(
+        &changed[2 * SLOT_STRIDE_BYTES as usize..],
+        &original[2 * SLOT_STRIDE_BYTES as usize..]
+    );
+    let mut image_file = fs::File::open(&image_path).unwrap();
+    assert_eq!(
+        read_file(&mut image_file, 1, "A long name.dat").unwrap(),
+        bytes
+    );
+    assert!(
+        list_files(&mut image_file, 1)
+            .unwrap()
+            .iter()
+            .any(|e| e.name == "A long name.dat")
+    );
+    extract_file(&mut image_file, 1, "A long name.dat", &output).unwrap();
+    assert_eq!(fs::read(output).unwrap(), bytes);
+    assert!(
+        import_file(
+            &image_path,
+            1,
+            &source,
+            Some("A long name.dat"),
+            false,
+            time
+        )
+        .is_err()
+    );
+    assert!(import_file(&image_path, 2, &source, None, false, time).is_err());
+    assert!(import_file(&image_path, 1, &source, Some("../escape"), false, time).is_err());
+    assert_eq!(fs::read(&image_path).unwrap(), changed);
+    fs::write(&source, b"new").unwrap();
+    import_file(&image_path, 1, &source, Some("A long name.dat"), true, time).unwrap();
+    assert_eq!(
+        read_file(
+            &mut fs::File::open(&image_path).unwrap(),
+            1,
+            "A long name.dat"
+        )
+        .unwrap(),
+        b"new"
+    );
+}
+
+#[cfg(feature = "cli")]
+#[test]
+fn cli_import_name_force_and_rejections() {
+    use std::{fs, process::Command};
+    let dir = ExtractionDir::new();
+    let image_path = dir.0.join("image.img");
+    fs::write(&image_path, image(FloppyGeometry::Kb720).into_inner()).unwrap();
+    let source = dir.0.join("hello.txt");
+    fs::write(&source, b"first").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_gotek"))
+            .current_dir(&dir.0)
+            .args(["import", "image.img", "--slot", "1", "hello.txt"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["--name", "long greeting.txt"]).status.success());
+    assert!(!run(&["--name", "long greeting.txt"]).status.success());
+    fs::write(&source, [0, 1, 255]).unwrap();
+    assert!(
+        run(&["--name", "long greeting.txt", "--force"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        read_file(
+            &mut fs::File::open(&image_path).unwrap(),
+            1,
+            "long greeting.txt"
+        )
+        .unwrap(),
+        [0, 1, 255]
+    );
+    let before = fs::read(&image_path).unwrap();
+    for args in [vec!["--name", "../escape"], vec!["--slot", "2"]] {
+        assert!(!run(&args).status.success());
+    }
+    assert_eq!(fs::read(&image_path).unwrap(), before);
+}
+
+#[test]
+fn import_rejects_oversize_and_symlink_images() {
+    use gotek_core::import_file;
+    use std::fs;
+    let dir = ExtractionDir::new();
+    let image_path = dir.0.join("image.img");
+    let source = dir.0.join("oversize.bin");
+    let before = image(FloppyGeometry::Kb720).into_inner();
+    fs::write(&image_path, &before).unwrap();
+    fs::write(&source, vec![1; 737_281]).unwrap();
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 3,
+        hour: 0,
+        minute: 0,
+        second: 0,
+    };
+    assert!(import_file(&image_path, 1, &source, None, false, time).is_err());
+    assert_eq!(fs::read(&image_path).unwrap(), before);
+    fs::write(&source, vec![1; 731_000]).unwrap();
+    assert!(import_file(&image_path, 1, &source, None, false, time).is_err());
+    assert_eq!(fs::read(&image_path).unwrap(), before);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let link = dir.0.join("link.img");
+        symlink(&image_path, &link).unwrap();
+        assert!(import_file(&link, 1, &source, None, false, time).is_err());
+    }
+}

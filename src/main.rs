@@ -19,6 +19,19 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Import one local file into a floppy slot.
+    Import {
+        image: PathBuf,
+        #[arg(long)]
+        slot: u16,
+        source: PathBuf,
+        /// Name inside the slot (defaults to source basename).
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an existing file in the slot.
+        #[arg(long)]
+        force: bool,
+    },
     /// Save a slot file to disk without modifying the image.
     Extract {
         image: PathBuf,
@@ -89,6 +102,23 @@ impl From<FloppySize> for FloppyGeometry {
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
+        Command::Import {
+            image,
+            slot,
+            source,
+            name,
+            force,
+        } => {
+            let time = UpdateTime {
+                year: 2026,
+                month: 11,
+                day: 1,
+                hour: 12,
+                minute: 0,
+                second: 0,
+            };
+            gotek_core::import_file(image, slot, source, name.as_deref(), force, time)?;
+        }
         Command::Extract {
             image,
             slot,

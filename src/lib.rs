@@ -36,6 +36,7 @@ pub mod fat12;
 mod files;
 mod format;
 pub mod geometry;
+mod import;
 mod inspect;
 pub mod layout;
 pub mod metadata;
@@ -46,6 +47,7 @@ pub use format::{
     FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
     generate_boot_sector,
 };
+pub use import::import_file;
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };

@@ -14,7 +14,7 @@ without mounting the image.
   validation errors and warnings.
 - Create empty images with 1–100 slots using **720K, 1.2 MB, or 1.44 MB** geometry.
 - Reinitialize existing regular image files while preserving their total size.
-- List FAT12 root directories, read and extract files, including VFAT long names and
+- List FAT12 root directories, read, extract, and import files, including VFAT long names and
   nested paths, without modifying the source.
 - Use files or other `Read + Seek` sources, including in-memory buffers.
 
@@ -93,6 +93,19 @@ and accepts slash-separated relative paths and ASCII case-insensitive names.
 `extract_file` saves exact bytes to a new file; it refuses existing destinations
 and requires parent directories to exist.
 
+### Import a file
+
+```rust,no_run
+use gotek_core::{import_file, metadata::UpdateTime};
+let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
+import_file("image.img", 5, "HELLO.TXT", None, false, time)?;
+# Ok::<(), gotek_core::GotekError>(())
+```
+
+The optional name replaces the source basename. Set the overwrite argument to
+`true` to truncate and replace an existing file in that slot. Back up the image
+before import; a write error can leave partial changes.
+
 ## Optional CLI
 
 `cli` is the only optional Cargo feature and is disabled by default. It enables
@@ -122,6 +135,11 @@ gotek cat image.img --slot 5 docs/readme.txt
 gotek extract image.img --slot 5 docs/readme.txt
 gotek extract image.img --slot 5 docs/readme.txt --output output.txt
 gotek extract image.img --slot 5 docs/readme.txt --output output.txt --force
+
+# Import a local file into slot 5; optionally rename or replace it.
+gotek import image.img --slot 5 HELLO.TXT
+gotek import image.img --slot 5 HELLO.TXT --name GREETING.TXT
+gotek import image.img --slot 5 HELLO.TXT --force
 
 # Reinitialize an existing image (destructive: back it up first).
 gotek init new-image.img --floppies 50 --size 1.44m --force
