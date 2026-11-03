@@ -2,16 +2,15 @@
 name = "gotek-core"
 version = "0.1.0"
 edition = "2024"
-description = "Inspect, format, and read FAT12 files in original-firmware Gotek floppy emulator images"
+rust-version = "1.85"
+description = "Rust library for managing original-firmware Gotek USB floppy emulator images"
 readme = "README.md"
 keywords = ["gotek", "floppy", "fat12", "disk-image", "ipcas"]
-categories = ["filesystem", "parser-implementations"]
+categories = ["filesystem", "command-line-utilities"]
 
-# Publish only implementation, factual format fixtures, and project documentation.
-# Local captures and research reports can contain third-party executable code.
 license = "MIT OR Apache-2.0"
 include = [
-    "Cargo.toml", "Cargo.lock", "LICENSE", "LICENSE-APACHE", "README.md", "GOTEK_FORMAT_SPEC.md",
+    "Cargo.toml", "Cargo.lock", "LICENSE", "LICENSE-APACHE", "README.md",
     "src/**/*.rs", "src/boot/*.S", "src/boot/README.md",
     "tests/**/*.rs", "tests/fixtures/*-bpb.bin", "tests/fixtures/*-root-label.bin",
     "tests/fixtures/README.md", "examples/**/*.rs",

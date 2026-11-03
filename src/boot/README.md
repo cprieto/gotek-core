@@ -43,5 +43,4 @@ word is written at bytes 13–14 and 22–23; byte 15 remains zero. Creation, ac
 and last-write dates occupy 16–17, 18–19, and 24–25. These observations describe
 format data and are not executable boot code or claims about firmware needs.
 
-Original Gotek hardware and ipcas interoperability remain unverified. In
-particular, it is not established whether either checks boot-code bytes.
+Interoperability with ipcas USB Floppy Emulator Manager V1.40 has been verified for the tested Rust-generated images. Compatibility with original Gotek hardware remains unverified. It is not established whether ipcas or the firmware validates boot-code bytes.
