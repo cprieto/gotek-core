@@ -243,7 +243,7 @@ fn extraction_preserves_bytes_refuses_overwrites_and_reports_errors() {
         ("folder/binary.dat", &[0, 255, 10]),
     ] {
         let output = directory.0.join(name.rsplit('/').next().unwrap());
-        extract_file(&mut image, 1, name, &output).unwrap();
+        extract_file(&mut image, 1, name, output.clone()).unwrap();
         assert_eq!(fs::read(&output).unwrap(), expected);
         assert!(matches!(
             extract_file(&mut image, 1, name, &output),
@@ -430,9 +430,9 @@ fn import_round_trip_and_slot_boundaries() {
         second: 11,
     };
     import_file(
-        &image_path,
+        image_path.clone(),
         1,
-        &source,
+        source.clone(),
         Some("A long name.dat"),
         false,
         time,
@@ -558,4 +558,38 @@ fn import_rejects_oversize_and_symlink_images() {
         symlink(&image_path, &link).unwrap();
         assert!(import_file(&link, 1, &source, None, false, time).is_err());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn import_accepts_non_utf8_host_path_with_explicit_fat_name() {
+    use std::{ffi::OsString, fs, os::unix::ffi::OsStringExt};
+    let dir = ExtractionDir::new();
+    let image_path = dir.0.join("image.img");
+    let source = dir
+        .0
+        .join(OsString::from_vec(vec![b'd', b'a', b't', b'a', 0xff]));
+    fs::write(&image_path, image(FloppyGeometry::Kb720).into_inner()).unwrap();
+    fs::write(&source, [0, 42, 255]).unwrap();
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 3,
+        hour: 9,
+        minute: 10,
+        second: 11,
+    };
+    gotek_core::import_file(
+        image_path.clone(),
+        1,
+        source.clone(),
+        Some("DATA.BIN"),
+        false,
+        time,
+    )
+    .unwrap();
+    assert_eq!(
+        read_file(&mut fs::File::open(&image_path).unwrap(), 1, "DATA.BIN").unwrap(),
+        [0, 42, 255]
+    );
 }

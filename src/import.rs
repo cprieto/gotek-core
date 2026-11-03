@@ -13,7 +13,8 @@ use std::{
 
 /// Import one local file into a slot's root directory.
 ///
-/// `name` defaults to the source basename. Only a single FAT filename is accepted;
+/// `image` and `source` accept host filesystem paths. `name` is a UTF-8 FAT
+/// filename and defaults to the source basename. Only a single FAT filename is accepted;
 /// directories must not be specified. `overwrite` truncates an existing regular
 /// file before writing; directory entries with that name are never replaced.
 /// `update_time` is a local wall-clock timestamp without timezone information.
@@ -37,14 +38,16 @@ pub fn import_file(
     if !metadata.is_file() {
         return Err(GotekError::NotRegularFile);
     }
-    let basename =
-        source
-            .file_name()
-            .and_then(|v| v.to_str())
-            .ok_or(GotekError::InvalidFormatOptions(
-                "source has no UTF-8 basename",
-            ))?;
-    let name = name.unwrap_or(basename);
+    // Only the default FAT name needs a UTF-8 conversion. Explicit names allow
+    // arbitrary host paths, including non-UTF-8 source basenames.
+    let name = match name {
+        Some(name) => name,
+        None => source.file_name().and_then(|value| value.to_str()).ok_or(
+            GotekError::InvalidFormatOptions(
+                "source has no UTF-8 basename; specify a FAT filename",
+            ),
+        )?,
+    };
     if name.is_empty()
         || name == "."
         || name == ".."

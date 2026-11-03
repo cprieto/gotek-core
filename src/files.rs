@@ -134,7 +134,8 @@ pub fn read_file<R: Read + Seek + ?Sized>(
     run().map_err(|source| GotekError::Io { offset, source })
 }
 
-/// Extract a slot file to a new destination without modifying the source.
+/// Extract a slot file to a new host filesystem path without modifying the source.
+/// `filename` is a `/`-separated FAT path; `destination` accepts any host path.
 ///
 /// Reuses [`read_file`], buffering at most one floppy payload in memory. The
 /// destination is created atomically and existing paths (including symlinks) are
@@ -144,7 +145,7 @@ pub fn read_file<R: Read + Seek + ?Sized>(
 ///
 /// ```no_run
 /// let mut image = std::fs::File::open("image.img")?;
-/// gotek_core::extract_file(&mut image, 5, "HELLO.TXT", "output/HELLO.TXT")?;
+/// gotek_core::extract_file(&mut image, 5, "HELLO.TXT", std::path::Path::new("output/HELLO.TXT"))?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn extract_file<R: Read + Seek + ?Sized>(

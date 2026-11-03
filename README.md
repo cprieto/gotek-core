@@ -74,16 +74,16 @@ of an existing image:
 
 ```rust,no_run
 use gotek_core::{extract_file, list_files, read_file};
-use std::fs::File;
+use std::{fs::File, path::Path};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut image = File::open("image.img")?;
+    let mut image = File::open(Path::new("image.img"))?;
     for entry in list_files(&mut image, 5)? {
         println!("{}: {} bytes", entry.name, entry.size);
     }
     let bytes = read_file(&mut image, 5, "docs/readme.txt")?;
     println!("{}", String::from_utf8_lossy(&bytes));
-    extract_file(&mut image, 5, "docs/readme.txt", "readme.txt")?;
+    extract_file(&mut image, 5, "docs/readme.txt", Path::new("readme.txt"))?;
     Ok(())
 }
 ```
@@ -97,8 +97,9 @@ and requires parent directories to exist.
 
 ```rust,no_run
 use gotek_core::{import_file, metadata::UpdateTime};
+use std::path::Path;
 let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
-import_file("image.img", 5, "HELLO.TXT", None, false, time)?;
+import_file(Path::new("image.img"), 5, Path::new("HELLO.TXT"), None, false, time)?;
 # Ok::<(), gotek_core::GotekError>(())
 ```
 
