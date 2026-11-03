@@ -16,6 +16,7 @@ without mounting the image.
 - Reinitialize existing regular image files while preserving their total size.
 - List FAT12 root directories, read, extract, and import files, including VFAT long names and
   nested paths, without modifying the source.
+- Report FAT12 cluster allocation for a slot with `slot_usage()`.
 - Use files or other `Read + Seek` sources, including in-memory buffers.
 
 ## Installation

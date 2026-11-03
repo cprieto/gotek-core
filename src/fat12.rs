@@ -135,3 +135,14 @@ fn dword(sector: &[u8; SECTOR_BYTES], offset: usize) -> u32 {
         sector[offset + 3],
     ])
 }
+
+/// Decode one packed FAT12 entry from a validated FAT byte slice.
+pub(crate) fn fat12_entry(fat: &[u8], cluster: usize) -> Option<u16> {
+    let offset = cluster.checked_add(cluster / 2)?;
+    let word = u16::from_le_bytes([*fat.get(offset)?, *fat.get(offset + 1)?]);
+    Some(if cluster.is_multiple_of(2) {
+        word & 0x0fff
+    } else {
+        word >> 4
+    })
+}
