@@ -19,6 +19,13 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Replace a slot with a complete FAT12 floppy image of identical geometry.
+    LoadImage {
+        image: PathBuf,
+        #[arg(long)]
+        slot: u16,
+        source: PathBuf,
+    },
     /// Import one local file into a floppy slot.
     Import {
         image: PathBuf,
@@ -102,6 +109,22 @@ impl From<FloppySize> for FloppyGeometry {
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
+        Command::LoadImage {
+            image,
+            slot,
+            source,
+        } => {
+            let time = UpdateTime {
+                year: 2026,
+                month: 11,
+                day: 1,
+                hour: 12,
+                minute: 0,
+                second: 0,
+            };
+            gotek_core::load_image(image, slot, source, time)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
         Command::Import {
             image,
             slot,

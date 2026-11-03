@@ -93,6 +93,19 @@ and accepts slash-separated relative paths and ASCII case-insensitive names.
 `extract_file` saves exact bytes to a new file; it refuses existing destinations
 and requires parent directories to exist.
 
+### Load a complete floppy image
+
+`load_image` replaces one slot with a complete FAT12 floppy image. The source
+must have the same supported geometry as the selected slot; back up the Gotek
+image first.
+
+```rust,no_run
+use gotek_core::{load_image, metadata::UpdateTime};
+let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
+load_image("disk.img", 5, "boot.img", time)?;
+# Ok::<(), gotek_core::GotekError>(())
+```
+
 ### Import a file
 
 ```rust,no_run
@@ -136,6 +149,9 @@ gotek cat image.img --slot 5 docs/readme.txt
 gotek extract image.img --slot 5 docs/readme.txt
 gotek extract image.img --slot 5 docs/readme.txt --output output.txt
 gotek extract image.img --slot 5 docs/readme.txt --output output.txt --force
+
+# Replace slot 5 with a complete FAT12 floppy image of the same geometry.
+gotek load-image disk.img --slot 5 boot.img
 
 # Import a local file into slot 5; optionally rename or replace it.
 gotek import image.img --slot 5 HELLO.TXT

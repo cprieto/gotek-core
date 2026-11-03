@@ -10,6 +10,13 @@ pub enum GotekError {
         /// Underlying filesystem error.
         source: io::Error,
     },
+    /// A complete floppy image has the wrong geometry for its destination slot.
+    GeometryMismatch {
+        expected: crate::geometry::FloppyGeometry,
+        actual: crate::geometry::FloppyGeometry,
+    },
+    /// A complete floppy image does not match the size declared by its BPB.
+    ImageSizeMismatch { expected: u64, actual: u64 },
     /// A zero-based slot index is outside the image's declared count.
     InvalidSlot { index: u16, count: u16 },
     /// An I/O operation failed at this absolute byte offset.
@@ -60,6 +67,14 @@ impl fmt::Display for GotekError {
             Self::DestinationIo { path, source } => {
                 write!(formatter, "destination {}: {source}", path.display())
             }
+            Self::GeometryMismatch { expected, actual } => write!(
+                formatter,
+                "geometry mismatch: expected {expected}, found {actual}"
+            ),
+            Self::ImageSizeMismatch { expected, actual } => write!(
+                formatter,
+                "floppy image size mismatch: expected {expected} bytes, found {actual}"
+            ),
             Self::InvalidSlot { index, count } => {
                 write!(formatter, "slot {index} is outside 0..{count}")
             }

@@ -41,6 +41,7 @@ mod import;
 mod inspect;
 pub mod layout;
 pub mod metadata;
+mod slot_image;
 
 pub use error::GotekError;
 pub use extract::extract_file;
@@ -53,3 +54,4 @@ pub use import::import_file;
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
+pub use slot_image::load_image;
