@@ -32,6 +32,7 @@
 //! for capture evidence and unresolved firmware questions.
 
 mod error;
+mod extract;
 pub mod fat12;
 mod files;
 mod format;
@@ -42,7 +43,8 @@ pub mod layout;
 pub mod metadata;
 
 pub use error::GotekError;
-pub use files::{FileInfo, extract_file, list_files, read_file};
+pub use extract::extract_file;
+pub use files::{FileInfo, list_files, read_file};
 pub use format::{
     FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
     generate_boot_sector,
