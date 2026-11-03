@@ -19,6 +19,13 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Save a slot as a complete standalone FAT12 floppy image.
+    SaveImage {
+        image: PathBuf,
+        #[arg(long)]
+        slot: u16,
+        destination: PathBuf,
+    },
     /// Replace a slot with a complete FAT12 floppy image of identical geometry.
     LoadImage {
         image: PathBuf,
@@ -109,6 +116,14 @@ impl From<FloppySize> for FloppyGeometry {
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
+        Command::SaveImage {
+            image,
+            slot,
+            destination,
+        } => {
+            gotek_core::save_image(image, slot, destination)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
         Command::LoadImage {
             image,
             slot,

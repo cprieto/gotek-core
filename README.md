@@ -95,14 +95,16 @@ and requires parent directories to exist.
 
 ### Load a complete floppy image
 
-`load_image` replaces one slot with a complete FAT12 floppy image. The source
+`load_image` replaces one slot with a complete FAT12 floppy image.
+`save_image` exports a slot as a standalone image with its payload bytes unchanged. The source
 must have the same supported geometry as the selected slot; back up the Gotek
 image first.
 
 ```rust,no_run
-use gotek_core::{load_image, metadata::UpdateTime};
+use gotek_core::{load_image, save_image, metadata::UpdateTime};
 let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
 load_image("disk.img", 5, "boot.img", time)?;
+save_image("disk.img", 5, "saved.img")?;
 # Ok::<(), gotek_core::GotekError>(())
 ```
 
@@ -152,6 +154,7 @@ gotek extract image.img --slot 5 docs/readme.txt --output output.txt --force
 
 # Replace slot 5 with a complete FAT12 floppy image of the same geometry.
 gotek load-image disk.img --slot 5 boot.img
+gotek save-image disk.img --slot 5 saved.img
 
 # Import a local file into slot 5; optionally rename or replace it.
 gotek import image.img --slot 5 HELLO.TXT
@@ -173,6 +176,10 @@ CLI initialization currently uses fixed serial
 Without `--force`, initialization refuses existing paths. With `--force`, it
 reinitializes a regular image file large enough for the requested slots, preserving
 its length and trailing data. Back up the image before reinitializing it.
+
+`import` and `extract` transfer individual FAT12 files. `load-image` and
+`save-image` transfer complete floppy images; `save-image` refuses to replace an
+existing file.
 
 ## Acknowledgments
 

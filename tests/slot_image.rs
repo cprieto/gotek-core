@@ -187,3 +187,104 @@ fn cli_load_image_accepts_matching_image_and_rejects_mismatch() {
     assert_eq!(fs::read(&image).unwrap(), original);
     fs::remove_dir_all(folder).unwrap();
 }
+
+#[test]
+fn save_image_exports_exact_payload_and_preserves_source() {
+    use gotek_core::save_image;
+    for geometry in [
+        FloppyGeometry::Kb720,
+        FloppyGeometry::Mb1200,
+        FloppyGeometry::Mb1440,
+    ] {
+        let folder = dir();
+        let image = folder.join("disk.img");
+        let output = folder.join("saved.img");
+        let mut original = bank(geometry);
+        let start = SLOT_STRIDE_BYTES as usize;
+        original[start + 62] ^= 0x37;
+        fs::write(&image, &original).unwrap();
+        save_image(&image, 1, &output).unwrap();
+        let saved = fs::read(&output).unwrap();
+        assert_eq!(saved.len() as u64, geometry.payload_bytes());
+        assert_eq!(saved, original[start..start + saved.len()]);
+        assert_eq!(fs::read(&image).unwrap(), original);
+        assert!(save_image(&image, 1, &output).is_err());
+        assert_eq!(fs::read(&output).unwrap(), saved);
+        fs::remove_dir_all(folder).unwrap();
+    }
+}
+
+#[test]
+fn save_image_rejects_invalid_sources_and_aliases() {
+    use gotek_core::save_image;
+    let folder = dir();
+    let image = folder.join("disk.img");
+    let output = folder.join("saved.img");
+    let original = bank(FloppyGeometry::Kb720);
+    fs::write(&image, &original).unwrap();
+    assert!(save_image(&image, 2, &output).is_err());
+    assert!(!output.exists());
+    assert!(save_image(&image, 1, &image).is_err());
+    let alias = folder.join("alias.img");
+    fs::hard_link(&image, &alias).unwrap();
+    assert!(save_image(&image, 1, &alias).is_err());
+    let mut invalid = original.clone();
+    invalid[SLOT_STRIDE_BYTES as usize + 510] = 0;
+    fs::write(&image, &invalid).unwrap();
+    assert!(save_image(&image, 1, &output).is_err());
+    invalid[SLOT_STRIDE_BYTES as usize + 510] = 0x55;
+    invalid[SLOT_STRIDE_BYTES as usize + 19] = 0;
+    invalid[SLOT_STRIDE_BYTES as usize + 20] = 0;
+    fs::write(&image, &invalid).unwrap();
+    assert!(save_image(&image, 1, &output).is_err());
+    fs::write(&image, &original[..original.len() - 1]).unwrap();
+    assert!(save_image(&image, 1, &output).is_err());
+    assert!(!output.exists());
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn load_then_save_image_round_trips() {
+    use gotek_core::save_image;
+    let folder = dir();
+    let disk = folder.join("disk.img");
+    let source = folder.join("boot.img");
+    let saved = folder.join("saved.img");
+    let original = bank(FloppyGeometry::Mb1440);
+    let mut floppy = original[..FloppyGeometry::Mb1440.payload_bytes() as usize].to_vec();
+    floppy[62] ^= 0x42;
+    fs::write(&disk, original).unwrap();
+    fs::write(&source, &floppy).unwrap();
+    load_image(&disk, 1, &source, time()).unwrap();
+    save_image(&disk, 1, &saved).unwrap();
+    assert_eq!(fs::read(saved).unwrap(), floppy);
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[cfg(feature = "cli")]
+#[test]
+fn cli_save_image_exports_and_refuses_existing_output() {
+    use std::process::Command;
+    let folder = dir();
+    let disk = folder.join("disk.img");
+    let output = folder.join("boot.img");
+    let original = bank(FloppyGeometry::Kb720);
+    fs::write(&disk, &original).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_gotek"))
+            .arg("save-image")
+            .arg(&disk)
+            .args(["--slot", "1"])
+            .arg(&output)
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    assert!(!run().status.success());
+    assert_eq!(
+        fs::read(&output).unwrap(),
+        original[SLOT_STRIDE_BYTES as usize
+            ..SLOT_STRIDE_BYTES as usize + FloppyGeometry::Kb720.payload_bytes() as usize]
+    );
+    fs::remove_dir_all(folder).unwrap();
+}

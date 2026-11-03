@@ -54,4 +54,4 @@ pub use import::import_file;
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
-pub use slot_image::load_image;
+pub use slot_image::{load_image, save_image};

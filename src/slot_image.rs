@@ -170,3 +170,86 @@ pub fn load_image(
         source,
     })
 }
+
+/// Save a slot's complete FAT12 payload as a standalone floppy image.
+///
+/// Validates the Gotek container and selected slot before creating the output.
+/// The payload is copied byte-for-byte; Gotek metadata, slot padding, and the
+/// boundary sector are excluded. Existing destinations are refused. If copying
+/// or flushing fails, the incomplete output is removed when possible.
+pub fn save_image(
+    image: impl AsRef<Path>,
+    slot: u16,
+    destination: impl AsRef<Path>,
+) -> Result<(), GotekError> {
+    let image = image.as_ref();
+    let destination = destination.as_ref();
+    let mut source = File::open(image).map_err(|error| GotekError::DestinationIo {
+        path: image.to_path_buf(),
+        source: error,
+    })?;
+    let info = crate::inspect(&mut source)?;
+    if slot >= info.floppy_count {
+        return Err(GotekError::InvalidSlot {
+            index: slot,
+            count: info.floppy_count,
+        });
+    }
+    let selected = &info.slots[usize::from(slot)];
+    let start = selected.offset;
+    let length = selected.geometry.payload_bytes();
+    let end = start
+        .checked_add(length)
+        .ok_or(GotekError::ArithmeticOverflow)?;
+    let actual = source
+        .metadata()
+        .map_err(|error| GotekError::Io {
+            offset: 0,
+            source: error,
+        })?
+        .len();
+    if actual < end {
+        return Err(GotekError::ImageTooSmall {
+            actual_bytes: actual,
+            required_bytes: end,
+        });
+    }
+    // An existing path, including a symlink or hard link to the source, is
+    // rejected by create_new. Check it before touching the output directory.
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(GotekError::DestinationIo {
+            path: destination.to_path_buf(),
+            source: std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+        });
+    }
+    source
+        .seek(SeekFrom::Start(start))
+        .map_err(|error| GotekError::Io {
+            offset: start,
+            source: error,
+        })?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| GotekError::DestinationIo {
+            path: destination.to_path_buf(),
+            source: error,
+        })?;
+    let result = (|| -> std::io::Result<()> {
+        let copied = std::io::copy(&mut Read::by_ref(&mut source).take(length), &mut output)?;
+        if copied != length {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        }
+        output.flush()
+    })();
+    drop(output);
+    if let Err(error) = result {
+        let _ = fs::remove_file(destination);
+        return Err(GotekError::DestinationIo {
+            path: destination.to_path_buf(),
+            source: error,
+        });
+    }
+    Ok(())
+}
