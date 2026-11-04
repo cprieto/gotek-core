@@ -593,3 +593,82 @@ fn import_accepts_non_utf8_host_path_with_explicit_fat_name() {
         [0, 42, 255]
     );
 }
+
+#[test]
+fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
+    use gotek_core::import_into;
+    let mut image = image(FloppyGeometry::Kb720);
+    let before = image.get_ref().clone();
+    let capacity = before.len() as u64;
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 3,
+        hour: 9,
+        minute: 10,
+        second: 11,
+    };
+    assert!(matches!(
+        import_into(
+            &mut image,
+            capacity - 1024,
+            1,
+            "hello.txt",
+            b"hello",
+            false,
+            time
+        ),
+        Err(GotekError::ImageTooSmall { .. })
+    ));
+    assert_eq!(image.get_ref(), &before);
+    assert!(matches!(
+        import_into(&mut image, capacity, 2, "hello.txt", b"hello", false, time),
+        Err(GotekError::InvalidSlot { .. })
+    ));
+    assert_eq!(image.get_ref(), &before);
+    import_into(
+        &mut image,
+        capacity,
+        1,
+        "a long name.txt",
+        b"hello",
+        false,
+        time,
+    )
+    .unwrap();
+    assert_eq!(
+        read_file(&mut image, 1, "a long name.txt").unwrap(),
+        b"hello"
+    );
+    assert!(
+        import_into(
+            &mut image,
+            capacity,
+            1,
+            "a long name.txt",
+            b"old",
+            false,
+            time
+        )
+        .is_err()
+    );
+    import_into(
+        &mut image,
+        capacity,
+        1,
+        "a long name.txt",
+        b"new",
+        true,
+        time,
+    )
+    .unwrap();
+    assert_eq!(read_file(&mut image, 1, "a long name.txt").unwrap(), b"new");
+    assert_eq!(
+        &image.get_ref()[..SLOT_STRIDE_BYTES as usize],
+        &before[..SLOT_STRIDE_BYTES as usize]
+    );
+    assert_eq!(
+        &image.get_ref()[2 * SLOT_STRIDE_BYTES as usize..],
+        &before[2 * SLOT_STRIDE_BYTES as usize..]
+    );
+}

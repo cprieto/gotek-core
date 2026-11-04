@@ -51,7 +51,7 @@ pub use format::{
     FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
     generate_boot_sector,
 };
-pub use import::import_file;
+pub use import::{import_file, import_into};
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
