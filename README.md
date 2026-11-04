@@ -18,6 +18,7 @@ without mounting the image.
 - List FAT12 root directories, read, extract, and import files, including VFAT long names and
   nested paths, without modifying the source.
 - Report FAT12 cluster allocation for a slot with `slot_usage()`.
+- Change a slot's FAT12 volume label with `set_slot_label()`.
 - Use files or other `Read + Seek` sources, including in-memory buffers.
 
 ## Installation
@@ -68,6 +69,7 @@ fn main() -> Result<(), gotek_core::GotekError> {
 
 `create_image` refuses to replace an existing path. Supply serials and timestamps
 explicitly; edit `options.slots` to use different values for individual slots.
+To rename an existing slot, call `set_slot_label("image.img", 5, "DATA DISK")`.
 
 ### List, read, and extract files
 

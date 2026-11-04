@@ -39,6 +39,7 @@ mod format;
 pub mod geometry;
 mod import;
 mod inspect;
+mod label;
 pub mod layout;
 pub mod metadata;
 mod slot_image;
@@ -55,5 +56,6 @@ pub use import::{import_file, import_into};
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
+pub use label::set_slot_label;
 pub use slot_image::{load_image, save_image};
 pub use usage::{SlotUsage, slot_usage};
