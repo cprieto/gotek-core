@@ -73,6 +73,8 @@ To rename an existing slot, call `set_slot_label("image.img", 5, "DATA DISK")`.
 For an already-open device descriptor, use
 `set_slot_label_on(&mut device, capacity, 5, "DATA DISK")`, supplying its full
 capacity in bytes.
+For repeated edits, `GotekDisk::open(device, capacity)` validates the layout
+once; then use `disk.slot_mut(5)?.set_label("DATA DISK")`.
 
 ### List, read, and extract files
 

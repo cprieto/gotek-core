@@ -31,6 +31,7 @@
 //! See the [format specification](https://github.com/cprieto/gotek-core/blob/main/GOTEK_FORMAT_SPEC.md)
 //! for capture evidence and unresolved firmware questions.
 
+mod disk;
 mod error;
 mod extract;
 pub mod fat12;
@@ -42,9 +43,11 @@ mod inspect;
 mod label;
 pub mod layout;
 pub mod metadata;
+mod slot;
 mod slot_image;
 mod usage;
 
+pub use disk::GotekDisk;
 pub use error::GotekError;
 pub use extract::extract_file;
 pub use files::{FileInfo, list_files, read_file};
@@ -56,6 +59,7 @@ pub use import::{import_file, import_into};
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
-pub use label::{GotekDisk, SlotMut, set_slot_label, set_slot_label_on};
+pub use label::{set_slot_label, set_slot_label_on};
+pub use slot::{Slot, SlotMut};
 pub use slot_image::{load_image, save_image};
 pub use usage::{SlotUsage, slot_usage};

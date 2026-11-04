@@ -130,9 +130,12 @@ fn slot_handle_reuses_validated_layout_and_updates_all_label_copies() {
     let original = image();
     let capacity = original.len() as u64;
     let mut disk = GotekDisk::open(Cursor::new(original.clone()), capacity).unwrap();
-    disk.slot_mut(0).unwrap().set_label("my disk").unwrap();
+    let mut first = disk.slot_mut(0).unwrap();
+    assert_eq!(first.as_slot().geometry(), FloppyGeometry::Kb720);
+    first.set_label("my disk").unwrap();
     disk.slot_mut(1).unwrap().set_label("TEMP").unwrap();
     disk.slot_mut(1).unwrap().set_label("FINAL").unwrap();
+    assert_eq!(disk.slot(1).unwrap().label().unwrap(), "FINAL");
 
     let mut expected = original;
     let slot = SLOT_STRIDE_BYTES as usize;
@@ -147,6 +150,22 @@ fn slot_handle_reuses_validated_layout_and_updates_all_label_copies() {
     assert_eq!(info.slots[0].volume_label, "MY DISK");
     assert_eq!(info.slots[1].volume_label, "FINAL");
     assert!(info.warnings.is_empty());
+}
+
+#[test]
+fn read_only_disk_opens_and_exposes_validated_slots() {
+    let bytes = image();
+    let capacity = bytes.len() as u64;
+    // Cursor<&[u8]> cannot write, so this also checks the trait bounds.
+    let mut disk = GotekDisk::open(Cursor::new(bytes.as_slice()), capacity).unwrap();
+    let mut slot = disk.slot(1).unwrap();
+    assert_eq!(slot.index(), 1);
+    assert_eq!(slot.offset(), SLOT_STRIDE_BYTES);
+    assert_eq!(slot.geometry(), FloppyGeometry::Kb720);
+    assert_eq!(slot.bpb().root_entries, 112);
+    assert_eq!(slot.label().unwrap(), "FLPPY1");
+    assert!(disk.slot(2).is_err());
+    assert_eq!(disk.into_inner().into_inner(), bytes.as_slice());
 }
 
 #[test]
