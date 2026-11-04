@@ -1,12 +1,13 @@
 # gotek-core
 
 `gotek-core` is a Rust library for inspecting, creating, and reading files from
-original Gotek USB floppy emulator disk images. Work with numbered floppy slots
+original [Gotek USB floppy emulator](https://www.gotekemulator.com/) disk images. Work with numbered floppy slots
 without mounting the image.
 
 [API documentation](https://docs.rs/gotek-core) ·
 [Repository](https://github.com/cprieto/gotek-core) ·
 [Technical format specification](GOTEK_FORMAT_SPEC.md)
+
 
 ## Features
 
@@ -194,3 +195,13 @@ inspiration.
 Licensed under either the [MIT license](LICENSE) or the
 [Apache License, Version 2.0](LICENSE-APACHE), at your option
 (`MIT OR Apache-2.0`).
+
+## AI-Assisted Development
+
+This project was developed with the assistance of AI tooling.
+
+AI tools have been used for collaborative design discussions, reveerse-engineering analysis, code generation and testing support.
+
+Direction, technical decisions, experimental validation, and final review remain under human responsibility.
+
+AI-generated contributions are reviewed and tested before being incorporated into the project.
