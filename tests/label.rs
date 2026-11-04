@@ -1,5 +1,5 @@
 use gotek_core::{
-    FormatOptions, SlotFormatOptions, format_image, geometry::FloppyGeometry, inspect,
+    FormatOptions, GotekDisk, SlotFormatOptions, format_image, geometry::FloppyGeometry, inspect,
     layout::SLOT_STRIDE_BYTES, metadata::UpdateTime, set_slot_label, set_slot_label_on,
 };
 use std::{fs, io::Cursor, path::PathBuf};
@@ -123,4 +123,44 @@ fn descriptor_rejects_insufficient_capacity_and_invalid_slot_without_writing() {
     }
     assert!(set_slot_label_on(&mut device, capacity, 2, "DEVICE").is_err());
     assert_eq!(device.get_ref(), &original);
+}
+
+#[test]
+fn slot_handle_reuses_validated_layout_and_updates_all_label_copies() {
+    let original = image();
+    let capacity = original.len() as u64;
+    let mut disk = GotekDisk::open(Cursor::new(original.clone()), capacity).unwrap();
+    disk.slot_mut(0).unwrap().set_label("my disk").unwrap();
+    disk.slot_mut(1).unwrap().set_label("TEMP").unwrap();
+    disk.slot_mut(1).unwrap().set_label("FINAL").unwrap();
+
+    let mut expected = original;
+    let slot = SLOT_STRIDE_BYTES as usize;
+    expected[43..54].copy_from_slice(b"MY DISK    ");
+    expected[7 * 512..7 * 512 + 11].copy_from_slice(b"MY DISK    ");
+    expected[slot + 43..slot + 54].copy_from_slice(b"FINAL      ");
+    expected[slot + 7 * 512..slot + 7 * 512 + 11].copy_from_slice(b"FINAL      ");
+    expected[2 * slot + 43..2 * slot + 54].copy_from_slice(b"FINAL      ");
+    let mut target = disk.into_inner();
+    assert_eq!(target.get_ref(), &expected);
+    let info = inspect(&mut target).unwrap();
+    assert_eq!(info.slots[0].volume_label, "MY DISK");
+    assert_eq!(info.slots[1].volume_label, "FINAL");
+    assert!(info.warnings.is_empty());
+}
+
+#[test]
+fn slot_handle_rejects_invalid_input_without_writing() {
+    let original = image();
+    let capacity = original.len() as u64;
+    let mut disk = GotekDisk::open(Cursor::new(original.clone()), capacity).unwrap();
+    assert!(disk.slot_mut(2).is_err());
+    assert!(disk.slot_mut(0).unwrap().set_label("BAD/NAME").is_err());
+    assert_eq!(disk.into_inner().into_inner(), original);
+
+    let mut missing_label = image();
+    missing_label[7 * 512 + 11] = 0;
+    let mut disk = GotekDisk::open(Cursor::new(missing_label.clone()), capacity).unwrap();
+    assert!(disk.slot_mut(0).unwrap().set_label("NEW").is_err());
+    assert_eq!(disk.into_inner().into_inner(), missing_label);
 }

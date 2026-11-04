@@ -1,5 +1,6 @@
 use crate::{
     GotekError,
+    fat12::Bpb,
     inspect::read_sector,
     layout::{METADATA_OFFSET_BYTES, SECTOR_BYTES, checked_offset, slot_offset},
     metadata::parse_count,
@@ -9,6 +10,124 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
+
+/// An already-open Gotek image or device with a validated slot layout.
+///
+/// Owns `target`; byte zero must be the start of slot zero. `capacity` is the
+/// accessible length in bytes, including the extra boundary sector. Opening
+/// checks the complete container once. Only structural layout is cached, not
+/// labels or warnings, so label edits do not leave cached label data stale.
+/// The caller must prevent external changes to the target while this value is
+/// in use, and must supply an accurate capacity for device descriptors.
+///
+/// ```no_run
+/// # use std::fs::OpenOptions;
+/// let target = OpenOptions::new().read(true).write(true).open("disk.img")?;
+/// let capacity = target.metadata()?.len();
+/// let mut disk = gotek_core::GotekDisk::open(target, capacity)?;
+/// disk.slot_mut(1)?.set_label("MY DISK")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct GotekDisk<R> {
+    target: R,
+    slots: Vec<SlotLayout>,
+    boundary_offset: u64,
+}
+
+struct SlotLayout {
+    offset: u64,
+    bpb: Bpb,
+    payload_bytes: u64,
+}
+
+/// A mutable handle to one slot, borrowing its [`GotekDisk`] exclusively.
+pub struct SlotMut<'a, R> {
+    disk: &'a mut GotekDisk<R>,
+    index: u16,
+}
+
+impl<R: Read + Write + Seek> GotekDisk<R> {
+    /// Validate and take ownership of an already-open image or device.
+    ///
+    /// The initial cursor position is ignored. Invalid count records, BPBs,
+    /// unsupported geometries, truncated containers, and insufficient declared
+    /// capacity are rejected before a slot handle can be obtained.
+    pub fn open(mut target: R, capacity: u64) -> Result<Self, GotekError> {
+        let minimum = METADATA_OFFSET_BYTES + SECTOR_BYTES as u64;
+        if capacity < minimum {
+            return Err(GotekError::ImageTooSmall {
+                actual_bytes: capacity,
+                required_bytes: minimum,
+            });
+        }
+        let count = parse_count(&read_sector(&mut target, METADATA_OFFSET_BYTES)?)?;
+        let boundary_offset = slot_offset(u64::from(count))?;
+        let required = checked_offset(boundary_offset, SECTOR_BYTES as u64)?;
+        if capacity < required {
+            return Err(GotekError::ImageTooSmall {
+                actual_bytes: capacity,
+                required_bytes: required,
+            });
+        }
+
+        let info = crate::inspect(&mut target)?;
+        let slots = info
+            .slots
+            .into_iter()
+            .map(|slot| SlotLayout {
+                offset: slot.offset,
+                bpb: slot.bpb,
+                payload_bytes: slot.geometry.payload_bytes(),
+            })
+            .collect();
+        Ok(Self {
+            target,
+            slots,
+            boundary_offset: info.boundary_offset,
+        })
+    }
+
+    /// Borrow a zero-based slot for label editing.
+    pub fn slot_mut(&mut self, index: u16) -> Result<SlotMut<'_, R>, GotekError> {
+        if usize::from(index) >= self.slots.len() {
+            return Err(GotekError::InvalidSlot {
+                index,
+                count: self.slots.len() as u16,
+            });
+        }
+        Ok(SlotMut { disk: self, index })
+    }
+
+    /// Return the owned descriptor after label editing.
+    pub fn into_inner(self) -> R {
+        self.target
+    }
+}
+
+impl<R: Read + Write + Seek> SlotMut<'_, R> {
+    /// Change the boot-sector and root-directory volume-label bytes.
+    ///
+    /// The final slot's boundary copy is updated too. The root entry is checked
+    /// before writing. A write failure may leave the copies inconsistent;
+    /// physical-device writes are not power-failure atomic.
+    pub fn set_label(&mut self, label: &str) -> Result<(), GotekError> {
+        let name = encode_label(label)?;
+        self.set_encoded_label(&name)
+    }
+
+    fn set_encoded_label(&mut self, name: &[u8; 11]) -> Result<(), GotekError> {
+        let index = usize::from(self.index);
+        let layout = &self.disk.slots[index];
+        let is_last = index + 1 == self.disk.slots.len();
+        write_slot_label(
+            &mut self.disk.target,
+            layout,
+            self.disk.boundary_offset,
+            is_last,
+            name,
+        )
+    }
+}
 
 /// Change a slot's FAT12 volume label in an existing regular Gotek image file.
 ///
@@ -50,7 +169,8 @@ pub fn set_slot_label(image: impl AsRef<Path>, slot: u16, label: &str) -> Result
     if !opened.is_file() {
         return Err(GotekError::NotRegularFile);
     }
-    set_label_encoded(&mut file, opened.len(), slot, &name)
+    let mut disk = GotekDisk::open(&mut file, opened.len())?;
+    disk.slot_mut(slot)?.set_encoded_label(&name)
 }
 
 /// Change a slot's FAT12 volume label through an already-open image or device.
@@ -82,44 +202,24 @@ pub fn set_slot_label_on<T: Read + Write + Seek + ?Sized>(
     label: &str,
 ) -> Result<(), GotekError> {
     let name = encode_label(label)?;
-    set_label_encoded(target, capacity, slot, &name)
+    let mut disk = GotekDisk::open(target, capacity)?;
+    disk.slot_mut(slot)?.set_encoded_label(&name)
 }
 
-fn set_label_encoded<T: Read + Write + Seek + ?Sized>(
+fn write_slot_label<T: Read + Write + Seek + ?Sized>(
     target: &mut T,
-    capacity: u64,
-    slot: u16,
+    selected: &SlotLayout,
+    boundary_offset: u64,
+    is_last: bool,
     name: &[u8; 11],
 ) -> Result<(), GotekError> {
-    let minimum = METADATA_OFFSET_BYTES + SECTOR_BYTES as u64;
-    if capacity < minimum {
-        return Err(GotekError::ImageTooSmall {
-            actual_bytes: capacity,
-            required_bytes: minimum,
-        });
-    }
-    let count = parse_count(&read_sector(target, METADATA_OFFSET_BYTES)?)?;
-    if slot >= count {
-        return Err(GotekError::InvalidSlot { index: slot, count });
-    }
-    let boundary_start = slot_offset(u64::from(count))?;
-    let required = checked_offset(boundary_start, SECTOR_BYTES as u64)?;
-    if capacity < required {
-        return Err(GotekError::ImageTooSmall {
-            actual_bytes: capacity,
-            required_bytes: required,
-        });
-    }
-
-    let info = crate::inspect(target)?;
-    let selected = &info.slots[usize::from(slot)];
     let bpb = &selected.bpb;
     let fat_sectors = u64::from(bpb.fat_count) * u64::from(bpb.sectors_per_fat);
     let root_sector = u64::from(bpb.reserved_sectors) + fat_sectors;
     let root_offset = checked_offset(selected.offset, root_sector * SECTOR_BYTES as u64)?;
     let root_bytes = u64::from(bpb.root_entries) * 32;
     let root_end = checked_offset(root_offset, root_bytes)?;
-    let payload_end = checked_offset(selected.offset, selected.geometry.payload_bytes())?;
+    let payload_end = checked_offset(selected.offset, selected.payload_bytes)?;
     if root_end > payload_end {
         return Err(GotekError::InvalidBpb {
             offset: selected.offset,
@@ -155,11 +255,11 @@ fn set_label_encoded<T: Read + Write + Seek + ?Sized>(
     ))?;
     let entry_offset = checked_offset(root_offset, (label_entry * 32) as u64)?;
     let boot_offset = checked_offset(selected.offset, 43)?;
-    let boundary_offset = checked_offset(info.boundary_offset, 43)?;
+    let boundary_offset = checked_offset(boundary_offset, 43)?;
 
     write_label(target, entry_offset, name)?;
     write_label(target, boot_offset, name)?;
-    if slot + 1 == info.floppy_count {
+    if is_last {
         write_label(target, boundary_offset, name)?;
     }
     target.flush().map_err(|source| GotekError::Io {

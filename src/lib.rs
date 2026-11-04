@@ -56,6 +56,6 @@ pub use import::{import_file, import_into};
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
-pub use label::{set_slot_label, set_slot_label_on};
+pub use label::{GotekDisk, SlotMut, set_slot_label, set_slot_label_on};
 pub use slot_image::{load_image, save_image};
 pub use usage::{SlotUsage, slot_usage};
