@@ -1,6 +1,6 @@
 use gotek_core::{
     FormatOptions, SlotFormatOptions, format_image, geometry::FloppyGeometry, inspect,
-    layout::SLOT_STRIDE_BYTES, metadata::UpdateTime, set_slot_label,
+    layout::SLOT_STRIDE_BYTES, metadata::UpdateTime, set_slot_label, set_slot_label_on,
 };
 use std::{fs, io::Cursor, path::PathBuf};
 
@@ -91,4 +91,36 @@ fn rejects_symlink_image() {
     assert!(set_slot_label(&alias, 0, "VALID").is_err());
     assert_eq!(fs::read(&path).unwrap(), before);
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn descriptor_updates_only_selected_slot_and_final_boundary() {
+    let original = image();
+    let capacity = original.len() as u64;
+    let mut device = Cursor::new(original.clone());
+    device.set_position(1234);
+    set_slot_label_on(&mut device, capacity, 1, "DEVICE").unwrap();
+    let mut expected = original;
+    let slot = SLOT_STRIDE_BYTES as usize;
+    expected[slot + 43..slot + 54].copy_from_slice(b"DEVICE     ");
+    expected[slot + 7 * 512..slot + 7 * 512 + 11].copy_from_slice(b"DEVICE     ");
+    expected[2 * slot + 43..2 * slot + 54].copy_from_slice(b"DEVICE     ");
+    assert_eq!(device.get_ref(), &expected);
+    assert_eq!(
+        inspect(&mut device).unwrap().slots[1].volume_label,
+        "DEVICE"
+    );
+}
+
+#[test]
+fn descriptor_rejects_insufficient_capacity_and_invalid_slot_without_writing() {
+    let original = image();
+    let capacity = original.len() as u64;
+    let mut device = Cursor::new(original.clone());
+    for invalid_capacity in [0, SLOT_STRIDE_BYTES, capacity - 1] {
+        assert!(set_slot_label_on(&mut device, invalid_capacity, 1, "DEVICE").is_err());
+        assert_eq!(device.get_ref(), &original);
+    }
+    assert!(set_slot_label_on(&mut device, capacity, 2, "DEVICE").is_err());
+    assert_eq!(device.get_ref(), &original);
 }

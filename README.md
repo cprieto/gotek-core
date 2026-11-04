@@ -70,6 +70,9 @@ fn main() -> Result<(), gotek_core::GotekError> {
 `create_image` refuses to replace an existing path. Supply serials and timestamps
 explicitly; edit `options.slots` to use different values for individual slots.
 To rename an existing slot, call `set_slot_label("image.img", 5, "DATA DISK")`.
+For an already-open device descriptor, use
+`set_slot_label_on(&mut device, capacity, 5, "DATA DISK")`, supplying its full
+capacity in bytes.
 
 ### List, read, and extract files
 
