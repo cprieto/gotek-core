@@ -92,6 +92,7 @@ pub(crate) fn write_slot_label<T: Read + Write + Seek + ?Sized>(
     boundary_offset: u64,
     is_last: bool,
     name: &[u8; 11],
+    write_started: &mut bool,
 ) -> Result<(), GotekError> {
     let bpb = &selected.bpb;
     let fat_sectors = u64::from(bpb.fat_count) * u64::from(bpb.sectors_per_fat);
@@ -137,10 +138,10 @@ pub(crate) fn write_slot_label<T: Read + Write + Seek + ?Sized>(
     let boot_offset = checked_offset(selected.offset, 43)?;
     let boundary_offset = checked_offset(boundary_offset, 43)?;
 
-    write_label(target, entry_offset, name)?;
-    write_label(target, boot_offset, name)?;
+    write_label(target, entry_offset, name, write_started)?;
+    write_label(target, boot_offset, name, write_started)?;
     if is_last {
-        write_label(target, boundary_offset, name)?;
+        write_label(target, boundary_offset, name, write_started)?;
     }
     target.flush().map_err(|source| GotekError::Io {
         offset: boot_offset,
@@ -152,9 +153,11 @@ fn write_label<T: Write + Seek + ?Sized>(
     file: &mut T,
     offset: u64,
     name: &[u8; 11],
+    write_started: &mut bool,
 ) -> Result<(), GotekError> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|source| GotekError::Io { offset, source })?;
+    *write_started = true;
     file.write_all(name)
         .map_err(|source| GotekError::Io { offset, source })
 }

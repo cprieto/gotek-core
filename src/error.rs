@@ -10,6 +10,10 @@ pub enum GotekError {
         /// Underlying filesystem error.
         source: io::Error,
     },
+    /// A generic output writer failed; no filesystem path is available.
+    OutputIo { source: io::Error },
+    /// A prior write may have changed the disk; reopen before further access.
+    DiskNeedsReopen,
     /// A complete floppy image has the wrong geometry for its destination slot.
     GeometryMismatch {
         expected: crate::geometry::FloppyGeometry,
@@ -67,6 +71,10 @@ impl fmt::Display for GotekError {
             Self::DestinationIo { path, source } => {
                 write!(formatter, "destination {}: {source}", path.display())
             }
+            Self::OutputIo { source } => write!(formatter, "output write: {source}"),
+            Self::DiskNeedsReopen => {
+                formatter.write_str("disk may be partially written; reopen it")
+            }
             Self::GeometryMismatch { expected, actual } => write!(
                 formatter,
                 "geometry mismatch: expected {expected}, found {actual}"
@@ -120,7 +128,9 @@ impl fmt::Display for GotekError {
 impl std::error::Error for GotekError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } | Self::DestinationIo { source, .. } => Some(source),
+            Self::Io { source, .. }
+            | Self::DestinationIo { source, .. }
+            | Self::OutputIo { source } => Some(source),
             _ => None,
         }
     }

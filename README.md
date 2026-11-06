@@ -15,10 +15,9 @@ without mounting the image.
   validation errors and warnings.
 - Create empty images with 1–100 slots using **720K, 1.2 MB, or 1.44 MB** geometry.
 - Reinitialize existing regular image files while preserving their total size.
-- List FAT12 root directories, read, extract, and import files, including VFAT long names and
-  nested paths, without modifying the source.
-- Report FAT12 cluster allocation for a slot with `slot_usage()`.
-- Change a slot's FAT12 volume label with `set_slot_label()`.
+- List and read FAT12 files, including VFAT long names and nested paths; import
+  single files and inspect cluster usage.
+- Change slot volume labels and transfer complete floppy images.
 - Use files or other `Read + Seek` sources, including in-memory buffers.
 
 ## Installation
@@ -69,67 +68,90 @@ fn main() -> Result<(), gotek_core::GotekError> {
 
 `create_image` refuses to replace an existing path. Supply serials and timestamps
 explicitly; edit `options.slots` to use different values for individual slots.
-To rename an existing slot, call `set_slot_label("image.img", 5, "DATA DISK")`.
-For an already-open device descriptor, use
-`set_slot_label_on(&mut device, capacity, 5, "DATA DISK")`, supplying its full
-capacity in bytes.
-For repeated edits, `GotekDisk::open(device, capacity)` validates the layout
-once; then use `disk.slot_mut(5)?.set_label("DATA DISK")`.
+Open an existing image with `GotekDisk::open(target, capacity)` and call
+`disk.slot_mut(5)?.set_label("DATA DISK")` to rename a slot. The path-based
+`set_slot_label()` helper retains regular-image-file checks.
 
-### List, read, and extract files
+### Work with a slot
 
 Slot numbers are zero-based. This example expects `docs/readme.txt` in slot 5
 of an existing image:
 
 ```rust,no_run
-use gotek_core::{extract_file, list_files, read_file};
-use std::{fs::File, path::Path};
+use gotek_core::GotekDisk;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut image = File::open(Path::new("image.img"))?;
-    for entry in list_files(&mut image, 5)? {
+    let image = File::open("image.img")?;
+    let capacity = image.metadata()?.len();
+    let mut disk = GotekDisk::open(image, capacity)?;
+    let mut slot = disk.slot(5)?;
+    println!("{}: {:?}", slot.label()?, slot.metadata()?.update_time);
+    for entry in slot.files()? {
         println!("{}: {} bytes", entry.name, entry.size);
     }
-    let bytes = read_file(&mut image, 5, "docs/readme.txt")?;
+    let bytes = slot.read_file("docs/readme.txt")?;
     println!("{}", String::from_utf8_lossy(&bytes));
-    extract_file(&mut image, 5, "docs/readme.txt", Path::new("readme.txt"))?;
+    let mut output = OpenOptions::new().write(true).create_new(true).open("readme.txt")?;
+    output.write_all(&bytes)?;
+    println!("{} clusters used", slot.usage()?.used_clusters);
     Ok(())
 }
 ```
 
-`list_files` lists root files and directories. `read_file` returns exact bytes
-and accepts slash-separated relative paths and ASCII case-insensitive names.
-`extract_file` saves exact bytes to a new file; it refuses existing destinations
-and requires parent directories to exist.
+`files()` lists root files and directories. `read_file()` accepts slash-separated
+relative paths and returns exact bytes. The path-based `extract_file()` helper
+saves a file without replacing an existing destination.
+
+`GotekDisk::open()` checks slot zero, the slot count, and declared capacity.
+Each slot is validated when accessed, so a damaged slot does not block reading
+another. Read-only access works without the extra boundary sector; mutation
+requires it. Use `inspect()` to check the complete container.
 
 ### Load a complete floppy image
 
-`load_image` replaces one slot with a complete FAT12 floppy image.
-`save_image` exports a slot as a standalone image with its payload bytes unchanged. The source
-must have the same supported geometry as the selected slot; back up the Gotek
-image first.
+`SlotMut::load_image()` replaces one slot with a complete FAT12 image of the
+same geometry. `Slot::save_image()` exports its exact payload bytes.
 
 ```rust,no_run
-use gotek_core::{load_image, save_image, metadata::UpdateTime};
-let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
-load_image("disk.img", 5, "boot.img", time)?;
-save_image("disk.img", 5, "saved.img")?;
-# Ok::<(), gotek_core::GotekError>(())
+use gotek_core::{GotekDisk, metadata::UpdateTime};
+use std::fs::{File, OpenOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let image = OpenOptions::new().read(true).write(true).open("disk.img")?;
+    let capacity = image.metadata()?.len();
+    let mut disk = GotekDisk::open(image, capacity)?;
+    let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
+    disk.slot_mut(5)?.load_image(&mut File::open("boot.img")?, time)?;
+    let mut output = OpenOptions::new().write(true).create_new(true).open("saved.img")?;
+    disk.slot(5)?.save_image(&mut output)?;
+    Ok(())
+}
 ```
 
 ### Import a file
 
 ```rust,no_run
-use gotek_core::{import_file, metadata::UpdateTime};
-use std::path::Path;
-let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
-import_file(Path::new("image.img"), 5, Path::new("HELLO.TXT"), None, false, time)?;
-# Ok::<(), gotek_core::GotekError>(())
+use gotek_core::{GotekDisk, metadata::UpdateTime};
+use std::fs::{self, OpenOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let image = OpenOptions::new().read(true).write(true).open("image.img")?;
+    let capacity = image.metadata()?.len();
+    let mut disk = GotekDisk::open(image, capacity)?;
+    let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
+    let bytes = fs::read("HELLO.TXT")?;
+    disk.slot_mut(5)?.import_file("HELLO.TXT", &bytes, false, time)?;
+    assert_eq!(disk.slot(5)?.read_file("HELLO.TXT")?, bytes);
+    Ok(())
+}
 ```
 
-The optional name replaces the source basename. Set the overwrite argument to
-`true` to truncate and replace an existing file in that slot. Back up the image
-before import; a write error can leave partial changes.
+Set `overwrite` to `true` to truncate and replace an existing FAT12 file.
+Back up the image before import or complete-image replacement; physical writes
+are not power-failure atomic. The caller supplies an accurate capacity and
+exclusive access for device descriptors.
 
 ## Optional CLI
 

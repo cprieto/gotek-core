@@ -1,4 +1,8 @@
-use crate::{GotekError, fat12::fat12_entry, layout::SECTOR_BYTES};
+use crate::{
+    GotekDisk, GotekError,
+    fat12::{Bpb, fat12_entry},
+    layout::SECTOR_BYTES,
+};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Counts of data-cluster allocation states in one slot's first FAT.
@@ -26,16 +30,18 @@ pub struct SlotUsage {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn slot_usage<R: Read + Seek>(reader: &mut R, slot: u16) -> Result<SlotUsage, GotekError> {
-    let info = crate::inspect(reader)?;
-    let selected = info
-        .slots
-        .get(usize::from(slot))
-        .ok_or(GotekError::InvalidSlot {
-            index: slot,
-            count: info.floppy_count,
-        })?;
-    let bpb = &selected.bpb;
-    let start = selected.offset;
+    let capacity = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|source| GotekError::Io { offset: 0, source })?;
+    let mut disk = GotekDisk::open(reader, capacity)?;
+    disk.slot(slot)?.usage()
+}
+
+pub(crate) fn usage_at<R: Read + Seek + ?Sized>(
+    reader: &mut R,
+    start: u64,
+    bpb: &Bpb,
+) -> Result<SlotUsage, GotekError> {
     let fat_len = usize::from(bpb.sectors_per_fat) * SECTOR_BYTES;
     let fat_start = start
         .checked_add(u64::from(bpb.reserved_sectors) * SECTOR_BYTES as u64)

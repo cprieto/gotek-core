@@ -108,3 +108,28 @@ pub(crate) fn parse_update(record: &[u8]) -> Option<UpdateTime> {
         second,
     })
 }
+
+/// Validate a wall-clock value and encode the 31-byte Gotek update record.
+pub(crate) fn encode_update_time(time: UpdateTime) -> Result<[u8; 31], GotekError> {
+    if !(1..=9999).contains(&time.year) {
+        return Err(GotekError::InvalidFormatOptions(
+            "timestamp year must be 1–9999",
+        ));
+    }
+    let record = format!(
+        "UPDATE TIME:{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
+        time.year, time.month, time.day, time.hour, time.minute, time.second
+    );
+    let bytes: [u8; 31] = record
+        .as_bytes()
+        .try_into()
+        .map_err(|_| GotekError::InvalidFormatOptions("invalid timestamp"))?;
+    let mut terminated = [0; 32];
+    terminated[..31].copy_from_slice(&bytes);
+    if parse_update(&terminated).is_none() {
+        return Err(GotekError::InvalidFormatOptions(
+            "invalid calendar date or time",
+        ));
+    }
+    Ok(bytes)
+}

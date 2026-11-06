@@ -82,7 +82,13 @@ fn load_each_geometry_preserves_everything_outside_payload_and_timestamp() {
             &before[start + len..start + METADATA_OFFSET_BYTES as usize]
         );
         let meta = start + METADATA_OFFSET_BYTES as usize;
-        assert_eq!(&after[meta + 31..], &before[meta + 31..]);
+        assert_eq!(
+            &after[meta + 31..start + SLOT_STRIDE_BYTES as usize],
+            &before[meta + 31..start + SLOT_STRIDE_BYTES as usize]
+        );
+        let boundary = start + SLOT_STRIDE_BYTES as usize;
+        assert_eq!(&after[boundary..boundary + 3], &[0, 0, 0]);
+        assert_eq!(&after[boundary + 3..boundary + 512], &floppy[3..512]);
         assert_eq!(&after[meta..meta + 31], b"UPDATE TIME:2026-11-03 09-10-12");
         assert_eq!(
             inspect(&mut fs::File::open(&image).unwrap())
@@ -143,6 +149,47 @@ fn load_rejects_bad_inputs_without_writing() {
     }
     assert!(load_image(&folder, 1, &source, time()).is_err());
     assert_eq!(fs::read(&image).unwrap(), before);
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn nonfinal_replacement_preserves_boundary_and_other_slot() {
+    let folder = dir();
+    let image = folder.join("bank.img");
+    let source = folder.join("floppy.img");
+    let before = bank(FloppyGeometry::Kb720);
+    let payload_len = FloppyGeometry::Kb720.payload_bytes() as usize;
+    let mut floppy = before[..payload_len].to_vec();
+    floppy[62] ^= 0x5a;
+    fs::write(&image, &before).unwrap();
+    fs::write(&source, &floppy).unwrap();
+    load_image(&image, 0, &source, time()).unwrap();
+    let after = fs::read(&image).unwrap();
+    assert_eq!(&after[..payload_len], &floppy);
+    assert_eq!(&after[payload_len..], &before[payload_len..]);
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn invalid_timestamp_precedes_destination_open() {
+    let folder = dir();
+    let absent = folder.join("missing.img");
+    let source = folder.join("floppy.img");
+    let bytes = bank(FloppyGeometry::Kb720);
+    fs::write(
+        &source,
+        &bytes[..FloppyGeometry::Kb720.payload_bytes() as usize],
+    )
+    .unwrap();
+    let invalid = UpdateTime {
+        year: 10_000,
+        ..time()
+    };
+    assert!(matches!(
+        load_image(&absent, 0, &source, invalid),
+        Err(gotek_core::GotekError::InvalidFormatOptions(_))
+    ));
+    assert!(!absent.exists());
     fs::remove_dir_all(folder).unwrap();
 }
 
@@ -237,7 +284,7 @@ fn save_image_rejects_invalid_sources_and_aliases() {
     invalid[SLOT_STRIDE_BYTES as usize + 20] = 0;
     fs::write(&image, &invalid).unwrap();
     assert!(save_image(&image, 1, &output).is_err());
-    fs::write(&image, &original[..original.len() - 1]).unwrap();
+    fs::write(&image, &original[..2 * SLOT_STRIDE_BYTES as usize - 1]).unwrap();
     assert!(save_image(&image, 1, &output).is_err());
     assert!(!output.exists());
     fs::remove_dir_all(folder).unwrap();

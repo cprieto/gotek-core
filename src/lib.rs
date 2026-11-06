@@ -8,8 +8,11 @@
 //! - [`inspect`] validates boot sectors and Gotek metadata and reports warnings.
 //! - [`create_image`] creates an empty image without replacing an existing path.
 //!   [`format_existing_image`] reinitializes a regular file, preserving its length.
-//! - [`list_files`] lists a slot's root; [`read_file`] reads relative FAT paths.
-//!   [`extract_file`] saves a file to a new destination. These provide bounded, read-only access through `fatfs`.
+//! - [`GotekDisk`] identifies an already-open container from slot zero and the
+//!   count record. Requested slots are validated lazily. [`Slot`] provides
+//!   read-only FAT12 access and complete-image export. [`SlotMut`] adds label
+//!   editing, single-file import, and complete-image replacement.
+//!   [`inspect`] remains the explicit full-container check.
 //!
 //! Readers implement [`std::io::Read`] + [`std::io::Seek`], with slot zero at byte
 //! zero. No mounting or device discovery is performed. Inspection and file access
@@ -17,10 +20,12 @@
 //! checks; use regular image files and keep backups before reinitializing them.
 //!
 //! ```no_run
-//! let mut image = std::fs::File::open("image.img")?;
-//! let info = gotek_core::inspect(&mut image)?;
-//! println!("{} slots ({})", info.floppy_count, info.geometry);
-//! for entry in gotek_core::list_files(&mut image, 0)? {
+//! let image = std::fs::File::open("image.img")?;
+//! let capacity = image.metadata()?.len();
+//! let mut disk = gotek_core::GotekDisk::open(image, capacity)?;
+//! let mut slot = disk.slot(0)?;
+//! println!("{} ({})", slot.label()?, slot.geometry());
+//! for entry in slot.files()? {
 //!     println!("{}: {} bytes", entry.name, entry.size);
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())

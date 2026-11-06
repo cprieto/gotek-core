@@ -6,7 +6,7 @@ use gotek_core::{
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Seek, Write},
     path::{Path, PathBuf},
 };
 
@@ -175,7 +175,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Extracted {filename} to {}", destination.display());
         }
         Command::Ls { image, slot } => {
-            for entry in gotek_core::list_files(&mut File::open(image)?, slot)? {
+            let mut source = File::open(image)?;
+            let capacity = source.seek(io::SeekFrom::End(0))?;
+            let mut disk = gotek_core::GotekDisk::open(source, capacity)?;
+            for entry in disk.slot(slot)?.files()? {
                 println!("{:02x}\t{}\t{}", entry.attributes, entry.size, entry.name);
             }
         }
@@ -184,7 +187,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             slot,
             filename,
         } => {
-            let bytes = gotek_core::read_file(&mut File::open(image)?, slot, &filename)?;
+            let mut source = File::open(image)?;
+            let capacity = source.seek(io::SeekFrom::End(0))?;
+            let mut disk = gotek_core::GotekDisk::open(source, capacity)?;
+            let bytes = disk.slot(slot)?.read_file(&filename)?;
             io::stdout().lock().write_all(&bytes)?;
         }
         Command::Inspect { path } => {

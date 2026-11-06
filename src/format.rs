@@ -10,7 +10,7 @@ use crate::{
     fat12::Bpb,
     geometry::FloppyGeometry,
     layout::{MAX_SLOTS, METADATA_OFFSET_BYTES, SECTOR_BYTES, checked_offset, slot_offset},
-    metadata::{UpdateTime, parse_update},
+    metadata::{UpdateTime, encode_update_time},
 };
 
 const BOOT_CODE_OFFSET: usize = 62;
@@ -338,7 +338,7 @@ fn prepare_slots(options: &FormatOptions) -> Result<Vec<PreparedSlot>, GotekErro
         let metadata = generate_metadata(
             slot.update_time,
             (index == 0).then_some(options.slots.len()),
-        );
+        )?;
         prepared.push(PreparedSlot {
             boot_sector,
             metadata,
@@ -374,54 +374,28 @@ fn generate_root_entry(
     root_entry
 }
 
-fn generate_metadata(time: UpdateTime, slot_count: Option<usize>) -> [u8; SECTOR_BYTES] {
+fn generate_metadata(
+    time: UpdateTime,
+    slot_count: Option<usize>,
+) -> Result<[u8; SECTOR_BYTES], GotekError> {
     let mut metadata = [0; SECTOR_BYTES];
-    metadata[..31].copy_from_slice(update_record(time).as_bytes());
+    metadata[..31].copy_from_slice(&encode_update_time(time)?);
     if let Some(count) = slot_count {
         let count_record = format!("MAX BLOCK:{count:03}");
         metadata[0x50..0x5d].copy_from_slice(count_record.as_bytes());
     }
-    metadata
+    Ok(metadata)
 }
 
 fn validate_slot_options(slot: SlotFormatOptions) -> Result<(), GotekError> {
-    validate_time(slot.update_time)?;
-    validate_time(slot.root_label_time)?;
+    encode_update_time(slot.update_time)?;
+    encode_update_time(slot.root_label_time)?;
     if !(1980..=2107).contains(&slot.root_label_time.year) {
         return Err(GotekError::InvalidFormatOptions(
             "root-label year must fit FAT's 1980–2107 range",
         ));
     }
     Ok(())
-}
-
-fn validate_time(time: UpdateTime) -> Result<(), GotekError> {
-    // Reuse the inspector's calendar validation instead of maintaining a second
-    // leap-year implementation. Fixed-width formatting is safe after year bounds.
-    if !(1..=9999).contains(&time.year) {
-        return Err(GotekError::InvalidFormatOptions(
-            "timestamp year must be 1–9999",
-        ));
-    }
-    let record = update_record(time);
-    if record.len() != 31 {
-        return Err(GotekError::InvalidFormatOptions("invalid timestamp"));
-    }
-    let mut terminated_record = [0; 32];
-    terminated_record[..31].copy_from_slice(record.as_bytes());
-    if parse_update(&terminated_record).is_none() {
-        return Err(GotekError::InvalidFormatOptions(
-            "invalid calendar date or time",
-        ));
-    }
-    Ok(())
-}
-
-fn update_record(time: UpdateTime) -> String {
-    format!(
-        "UPDATE TIME:{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
-        time.year, time.month, time.day, time.hour, time.minute, time.second
-    )
 }
 
 fn put_word(sector: &mut [u8; SECTOR_BYTES], offset: usize, value: u16) {

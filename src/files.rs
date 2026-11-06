@@ -1,12 +1,6 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use crate::{
-    GotekError,
-    fat12::Bpb,
-    inspect::{detect_geometry, read_sector},
-    layout::{METADATA_OFFSET_BYTES, slot_offset},
-    metadata::parse_count,
-};
+use crate::{GotekDisk, GotekError};
 
 /// A root-directory file or subdirectory (volume labels and dot entries are omitted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +23,24 @@ pub fn list_files<R: Read + Seek + ?Sized>(
     reader: &mut R,
     slot: u16,
 ) -> Result<Vec<FileInfo>, GotekError> {
-    let volume = SlotReader::new(reader, slot)?;
+    let capacity = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|source| GotekError::Io { offset: 0, source })?;
+    let mut disk = GotekDisk::open(reader, capacity)?;
+    disk.slot(slot)?.files()
+}
+
+pub(crate) fn list_at<R: Read + Seek + ?Sized>(
+    reader: &mut R,
+    start: u64,
+    length: u64,
+) -> Result<Vec<FileInfo>, GotekError> {
+    list_volume(SlotReader::at(reader, start, length))
+}
+
+fn list_volume<R: Read + Seek + ?Sized>(
+    volume: SlotReader<'_, R>,
+) -> Result<Vec<FileInfo>, GotekError> {
     let offset = volume.start;
     let fs = fatfs::FileSystem::new(volume, fatfs::FsOptions::new().update_accessed_date(false))
         .map_err(|source| GotekError::Io { offset, source })?;
@@ -58,7 +69,26 @@ pub fn read_file<R: Read + Seek + ?Sized>(
     slot: u16,
     filename: &str,
 ) -> Result<Vec<u8>, GotekError> {
-    let volume = SlotReader::new(reader, slot)?;
+    let capacity = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|source| GotekError::Io { offset: 0, source })?;
+    let mut disk = GotekDisk::open(reader, capacity)?;
+    disk.slot(slot)?.read_file(filename)
+}
+
+pub(crate) fn read_at<R: Read + Seek + ?Sized>(
+    reader: &mut R,
+    start: u64,
+    length: u64,
+    filename: &str,
+) -> Result<Vec<u8>, GotekError> {
+    read_volume(SlotReader::at(reader, start, length), filename)
+}
+
+fn read_volume<R: Read + Seek + ?Sized>(
+    volume: SlotReader<'_, R>,
+    filename: &str,
+) -> Result<Vec<u8>, GotekError> {
     let offset = volume.start;
     let limit = volume.length;
     let run = || -> io::Result<Vec<u8>> {
@@ -139,20 +169,13 @@ struct SlotReader<'a, R: ?Sized> {
 }
 
 impl<'a, R: Read + Seek + ?Sized> SlotReader<'a, R> {
-    fn new(reader: &'a mut R, index: u16) -> Result<Self, GotekError> {
-        let count = parse_count(&read_sector(reader, METADATA_OFFSET_BYTES)?)?;
-        if index >= count {
-            return Err(GotekError::InvalidSlot { index, count });
-        }
-        let start = slot_offset(u64::from(index))?;
-        let bpb = Bpb::parse(&read_sector(reader, start)?, start)?;
-        detect_geometry(&bpb, start)?;
-        Ok(Self {
+    fn at(reader: &'a mut R, start: u64, length: u64) -> Self {
+        Self {
             reader,
             start,
-            length: bpb.payload_bytes()?,
+            length,
             position: 0,
-        })
+        }
     }
 }
 

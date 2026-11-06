@@ -131,7 +131,7 @@ fn slot_handle_reuses_validated_layout_and_updates_all_label_copies() {
     let capacity = original.len() as u64;
     let mut disk = GotekDisk::open(Cursor::new(original.clone()), capacity).unwrap();
     let mut first = disk.slot_mut(0).unwrap();
-    assert_eq!(first.as_slot().geometry(), FloppyGeometry::Kb720);
+    assert_eq!(first.as_slot().unwrap().geometry(), FloppyGeometry::Kb720);
     first.set_label("my disk").unwrap();
     disk.slot_mut(1).unwrap().set_label("TEMP").unwrap();
     disk.slot_mut(1).unwrap().set_label("FINAL").unwrap();

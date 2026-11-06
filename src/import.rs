@@ -3,7 +3,7 @@ use crate::{
     fat12::Bpb,
     inspect::{detect_geometry, read_sector},
     layout::{METADATA_OFFSET_BYTES, slot_offset},
-    metadata::{UpdateTime, parse_count, parse_update},
+    metadata::{UpdateTime, encode_update_time, parse_count},
 };
 use std::{
     fs::{self, OpenOptions},
@@ -44,7 +44,7 @@ pub fn import_file(
         )?,
     };
     // Keep the path API's source-read-before-target-open ordering.
-    validate_name_and_time(name, update_time)?;
+    let record = validate_import(name, update_time)?;
     let bytes = fs::read(source).map_err(|error| GotekError::DestinationIo {
         path: source.to_path_buf(),
         source: error,
@@ -66,15 +66,34 @@ pub fn import_file(
     if !capacity.is_file() {
         return Err(GotekError::NotRegularFile);
     }
-    import_into(
-        &mut file,
-        capacity.len(),
-        slot,
+    let request = ImportRequest {
         name,
-        &bytes,
+        bytes: &bytes,
         overwrite,
-        update_time,
-    )
+        record,
+    };
+    import_into_checked(&mut file, capacity.len(), slot, &request)
+}
+
+pub(crate) struct ImportRequest<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) bytes: &'a [u8],
+    pub(crate) overwrite: bool,
+    pub(crate) record: [u8; 31],
+}
+
+pub(crate) fn validate_import(name: &str, time: UpdateTime) -> Result<[u8; 31], GotekError> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':'])
+        || name.chars().any(|c| c.is_control())
+    {
+        return Err(GotekError::InvalidFormatOptions(
+            "expected one FAT filename without path separators",
+        ));
+    }
+    encode_update_time(time)
 }
 
 /// Import bytes into an already-open Gotek image or device descriptor.
@@ -97,7 +116,22 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
     overwrite: bool,
     update_time: UpdateTime,
 ) -> Result<(), GotekError> {
-    let record = validate_name_and_time(name, update_time)?;
+    let record = validate_import(name, update_time)?;
+    let request = ImportRequest {
+        name,
+        bytes,
+        overwrite,
+        record,
+    };
+    import_into_checked(target, capacity, slot, &request)
+}
+
+fn import_into_checked<T: Read + Write + Seek + ?Sized>(
+    target: &mut T,
+    capacity: u64,
+    slot: u16,
+    request: &ImportRequest<'_>,
+) -> Result<(), GotekError> {
     let minimum = METADATA_OFFSET_BYTES
         .checked_add(512)
         .ok_or(GotekError::ArithmeticOverflow)?;
@@ -114,12 +148,6 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
     let start = slot_offset(u64::from(slot))?;
     let bpb = Bpb::parse(&read_sector(target, start)?, start)?;
     detect_geometry(&bpb, start)?;
-    let limit = bpb.payload_bytes()?;
-    if bytes.len() as u64 > limit {
-        return Err(GotekError::InvalidFormatOptions(
-            "source exceeds FAT12 payload",
-        ));
-    }
     let metadata_offset = start
         .checked_add(METADATA_OFFSET_BYTES)
         .ok_or(GotekError::ArithmeticOverflow)?;
@@ -132,6 +160,33 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
             required_bytes: required,
         });
     }
+    let mut write_started = false;
+    import_at(target, start, &bpb, request, &mut write_started)
+}
+
+/// Import using a slot BPB already validated by the disk owner.
+pub(crate) fn import_at<T: Read + Write + Seek + ?Sized>(
+    target: &mut T,
+    start: u64,
+    bpb: &Bpb,
+    request: &ImportRequest<'_>,
+    write_started: &mut bool,
+) -> Result<(), GotekError> {
+    let ImportRequest {
+        name,
+        bytes,
+        overwrite,
+        record,
+    } = request;
+    let limit = bpb.payload_bytes()?;
+    if bytes.len() as u64 > limit {
+        return Err(GotekError::InvalidFormatOptions(
+            "source exceeds FAT12 payload",
+        ));
+    }
+    let metadata_offset = start
+        .checked_add(METADATA_OFFSET_BYTES)
+        .ok_or(GotekError::ArithmeticOverflow)?;
     let mut payload = vec![0; limit as usize];
     target
         .seek(SeekFrom::Start(start))
@@ -174,7 +229,7 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
                 source,
             })?;
         if let Some(is_file) = existing
-            && (!is_file || !overwrite)
+            && (!is_file || !*overwrite)
         {
             return Err(GotekError::InvalidFormatOptions(
                 "destination already exists",
@@ -215,13 +270,14 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
             source,
         })?;
     }
-    timestamp_sector[..31].copy_from_slice(record.as_bytes());
+    timestamp_sector[..31].copy_from_slice(record);
     target
         .seek(SeekFrom::Start(start))
         .map_err(|source| GotekError::Io {
             offset: start,
             source,
         })?;
+    *write_started = true;
     target
         .write_all(&payload)
         .map_err(|source| GotekError::Io {
@@ -244,35 +300,4 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
         offset: metadata_offset,
         source,
     })
-}
-
-fn validate_name_and_time(name: &str, update_time: UpdateTime) -> Result<String, GotekError> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains(['/', '\\', ':'])
-        || name.chars().any(|c| c.is_control())
-    {
-        return Err(GotekError::InvalidFormatOptions(
-            "expected one FAT filename without path separators",
-        ));
-    }
-    let record = format!(
-        "UPDATE TIME:{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
-        update_time.year,
-        update_time.month,
-        update_time.day,
-        update_time.hour,
-        update_time.minute,
-        update_time.second,
-    );
-    if record.len() != 31 {
-        return Err(GotekError::InvalidFormatOptions("invalid update timestamp"));
-    }
-    let mut terminated = [0u8; 32];
-    terminated[..31].copy_from_slice(record.as_bytes());
-    if parse_update(&terminated).is_none() {
-        return Err(GotekError::InvalidFormatOptions("invalid update timestamp"));
-    }
-    Ok(record)
 }
