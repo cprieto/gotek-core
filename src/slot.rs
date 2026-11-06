@@ -36,25 +36,12 @@ impl<R: Read + Seek> GotekDisk<R> {
         self.validate_slot(index)?;
         Ok(Slot { disk: self, index })
     }
-
-    fn check_index(&self, index: u16) -> Result<(), GotekError> {
-        if usize::from(index) >= self.slots.len() {
-            return Err(GotekError::InvalidSlot {
-                index,
-                count: self.slots.len() as u16,
-            });
-        }
-        Ok(())
-    }
 }
 
 impl<R: Read + Write + Seek> GotekDisk<R> {
     /// Validate and borrow one zero-based slot for mutation.
-    /// Requires a complete, structurally valid extra boundary sector.
+    /// The boundary sector is checked only by operations that update it.
     pub fn slot_mut(&mut self, index: u16) -> Result<SlotMut<'_, R>, GotekError> {
-        self.ensure_healthy()?;
-        self.check_index(index)?;
-        self.validate_boundary()?;
         self.validate_slot(index)?;
         Ok(SlotMut { disk: self, index })
     }
@@ -195,21 +182,20 @@ impl<R: Read + Write + Seek> SlotMut<'_, R> {
             overwrite,
             record,
         };
+        self.import_validated(&request)
+    }
+
+    pub(crate) fn import_validated(
+        &mut self,
+        request: &import::ImportRequest<'_>,
+    ) -> Result<(), GotekError> {
         let layout = self.disk.slots[usize::from(self.index)]
             .as_ref()
             .expect("slot validated before handle creation");
-        let mut write_started = false;
-        let result = import::import_at(
-            &mut self.disk.target,
-            layout.offset,
-            &layout.bpb,
-            &request,
-            &mut write_started,
-        );
-        if result.is_err() && write_started {
-            self.disk.poisoned = true;
-        }
-        result
+        let start = layout.offset;
+        let bpb = layout.bpb.clone();
+        self.disk
+            .mutate(|target| import::import_at(target, start, &bpb, request))
     }
 
     /// Replace this slot with a complete FAT12 image of identical geometry.
@@ -235,43 +221,31 @@ impl<R: Read + Write + Seek> SlotMut<'_, R> {
         source: &mut S,
         record: &[u8; 31],
     ) -> Result<(), GotekError> {
-        self.disk.ensure_healthy()?;
         let index = usize::from(self.index);
+        let is_last = index + 1 == self.disk.slots.len();
+        if is_last {
+            self.disk.validate_boundary()?;
+        }
         let layout = self.disk.slots[index]
             .as_ref()
             .expect("slot validated before handle creation");
-        let boundary_offset =
-            (index + 1 == self.disk.slots.len()).then_some(self.disk.boundary_offset);
+        let start = layout.offset;
+        let geometry = layout.geometry;
+        let boundary_offset = is_last.then_some(self.disk.boundary_offset);
         let destination = slot_image::LoadTarget {
-            capacity: self.disk.capacity,
-            start: layout.offset,
-            bpb: &layout.bpb,
+            start,
+            geometry,
             boundary_offset,
         };
-        let mut write_started = false;
-        let result = slot_image::load_at(
-            &mut self.disk.target,
-            destination,
-            source,
-            record,
-            &mut write_started,
-        );
-        match result {
-            Ok(bpb) => {
-                // Identical geometry can still have a different valid BPB.
-                self.disk.slots[index]
-                    .as_mut()
-                    .expect("slot validated before handle creation")
-                    .bpb = bpb;
-                Ok(())
-            }
-            Err(error) => {
-                if write_started {
-                    self.disk.poisoned = true;
-                }
-                Err(error)
-            }
-        }
+        let bpb = self
+            .disk
+            .mutate(|target| slot_image::load_at(target, destination, source, record))?;
+        // Identical geometry can still have a different valid BPB.
+        self.disk.slots[index]
+            .as_mut()
+            .expect("slot validated before handle creation")
+            .bpb = bpb;
+        Ok(())
     }
 
     /// Change the boot-sector and root-directory volume-label bytes.
@@ -286,24 +260,21 @@ impl<R: Read + Write + Seek> SlotMut<'_, R> {
     }
 
     pub(crate) fn set_encoded_label(&mut self, name: &[u8; 11]) -> Result<(), GotekError> {
-        self.disk.ensure_healthy()?;
         let index = usize::from(self.index);
         let layout = self.disk.slots[index]
             .as_ref()
             .expect("slot validated before handle creation");
         let is_last = index + 1 == self.disk.slots.len();
-        let mut write_started = false;
-        let result = write_slot_label(
-            &mut self.disk.target,
-            layout,
-            self.disk.boundary_offset,
-            is_last,
-            name,
-            &mut write_started,
-        );
-        if result.is_err() && write_started {
-            self.disk.poisoned = true;
+        let selected = crate::disk::SlotLayout {
+            offset: layout.offset,
+            bpb: layout.bpb.clone(),
+            geometry: layout.geometry,
+        };
+        if is_last {
+            self.disk.validate_boundary()?;
         }
-        result
+        let boundary_offset = self.disk.boundary_offset;
+        self.disk
+            .mutate(|target| write_slot_label(target, &selected, boundary_offset, is_last, name))
     }
 }

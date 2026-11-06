@@ -229,21 +229,35 @@ pub fn format_image<W: Write + Seek + ?Sized>(
 /// concurrent file changes during formatting. An I/O failure can leave a partial
 /// image; successful writes are flushed but not synchronized to durable storage.
 pub fn format_existing_image(image: &mut File, options: &FormatOptions) -> Result<(), GotekError> {
-    let image_size = options.image_size_bytes()?;
-    let prepared_slots = prepare_slots(options)?;
     let metadata = image
         .metadata()
         .map_err(|source| GotekError::Io { offset: 0, source })?;
     if !metadata.is_file() {
         return Err(GotekError::NotRegularFile);
     }
-    if metadata.len() < image_size {
+    format_on(image, metadata.len(), options)
+}
+
+/// Reinitialize an already-open target using an explicit verified capacity.
+///
+/// This generic formatter does not identify devices, check mounts, or obtain
+/// exclusive access. The caller must perform those checks before calling it.
+/// It writes only the required prefix, without truncating or resizing the target.
+/// Failed writes can leave a partial format.
+pub fn format_on<W: Write + Seek + ?Sized>(
+    writer: &mut W,
+    capacity: u64,
+    options: &FormatOptions,
+) -> Result<(), GotekError> {
+    let image_size = options.image_size_bytes()?;
+    let prepared_slots = prepare_slots(options)?;
+    if capacity < image_size {
         return Err(GotekError::ImageTooSmall {
-            actual_bytes: metadata.len(),
+            actual_bytes: capacity,
             required_bytes: image_size,
         });
     }
-    write_prepared_image(image, image_size, &prepared_slots)
+    write_prepared_image(writer, image_size, &prepared_slots)
 }
 
 fn write_prepared_image<W: Write + Seek + ?Sized>(
@@ -306,6 +320,7 @@ struct PreparedSlot {
 
 fn prepare_slots(options: &FormatOptions) -> Result<Vec<PreparedSlot>, GotekError> {
     let mut prepared = Vec::with_capacity(options.slots.len());
+    let mut encoded_updates: Vec<(UpdateTime, [u8; 31])> = Vec::new();
     for (index, slot) in options.slots.iter().enumerate() {
         let slot_index = u16::try_from(index).map_err(|_| GotekError::ArithmeticOverflow)?;
         let boot_sector = generate_boot_sector(options.geometry, slot_index, slot.volume_serial)?;
@@ -335,10 +350,19 @@ fn prepare_slots(options: &FormatOptions) -> Result<Vec<PreparedSlot>, GotekErro
             .checked_sub(payload_bytes)
             .ok_or(GotekError::ArithmeticOverflow)?;
         let root_entry = generate_root_entry(&boot_sector, slot.root_label_time);
-        let metadata = generate_metadata(
-            slot.update_time,
-            (index == 0).then_some(options.slots.len()),
-        )?;
+        let update_record = match encoded_updates
+            .iter()
+            .find(|(time, _)| *time == slot.update_time)
+        {
+            Some((_, record)) => *record,
+            None => {
+                let record = encode_update_time(slot.update_time)?;
+                encoded_updates.push((slot.update_time, record));
+                record
+            }
+        };
+        let metadata =
+            generate_metadata(update_record, (index == 0).then_some(options.slots.len()));
         prepared.push(PreparedSlot {
             boot_sector,
             metadata,
@@ -374,17 +398,14 @@ fn generate_root_entry(
     root_entry
 }
 
-fn generate_metadata(
-    time: UpdateTime,
-    slot_count: Option<usize>,
-) -> Result<[u8; SECTOR_BYTES], GotekError> {
+fn generate_metadata(update_record: [u8; 31], slot_count: Option<usize>) -> [u8; SECTOR_BYTES] {
     let mut metadata = [0; SECTOR_BYTES];
-    metadata[..31].copy_from_slice(&encode_update_time(time)?);
+    metadata[..31].copy_from_slice(&update_record);
     if let Some(count) = slot_count {
         let count_record = format!("MAX BLOCK:{count:03}");
         metadata[0x50..0x5d].copy_from_slice(count_record.as_bytes());
     }
-    Ok(metadata)
+    metadata
 }
 
 fn validate_slot_options(slot: SlotFormatOptions) -> Result<(), GotekError> {

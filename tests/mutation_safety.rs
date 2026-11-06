@@ -1,6 +1,6 @@
 use gotek_core::{
     FormatOptions, GotekDisk, GotekError, SlotFormatOptions, format_image,
-    geometry::FloppyGeometry, metadata::UpdateTime,
+    geometry::FloppyGeometry, import_into, metadata::UpdateTime,
 };
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
@@ -199,4 +199,117 @@ fn export_distinguishes_output_and_source_failures() {
         slot.save_image(&mut Vec::new()),
         Err(GotekError::Io { .. })
     ));
+}
+
+#[test]
+fn export_retries_interrupted_source_reads() {
+    use std::{cell::Cell, rc::Rc};
+    struct InterruptedReader {
+        inner: Cursor<Vec<u8>>,
+        interruptions: Rc<Cell<u8>>,
+    }
+    impl Read for InterruptedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let left = self.interruptions.get();
+            if left > 0 {
+                self.interruptions.set(left - 1);
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                self.inner.read(buf)
+            }
+        }
+    }
+    impl Seek for InterruptedReader {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+    let bytes = bank();
+    let interruptions = Rc::new(Cell::new(0));
+    let reader = InterruptedReader {
+        inner: Cursor::new(bytes.clone()),
+        interruptions: interruptions.clone(),
+    };
+    let mut disk = GotekDisk::open(reader, bytes.len() as u64).unwrap();
+    let mut slot = disk.slot(0).unwrap();
+    interruptions.set(3);
+    let mut output = Vec::new();
+    slot.save_image(&mut output).unwrap();
+    assert_eq!(interruptions.get(), 0);
+    assert_eq!(
+        output,
+        bytes[..FloppyGeometry::Kb720.payload_bytes() as usize]
+    );
+}
+
+#[test]
+fn descriptor_and_slot_import_validate_consistently() {
+    let before = bank();
+    let capacity = before.len() as u64;
+    let cases = [
+        (1, "BAD/NAME", b"x".as_slice(), time()),
+        (2, "A.TXT", b"x".as_slice(), time()),
+        (2, "BAD/NAME", b"x".as_slice(), time()),
+        (
+            1,
+            "A.TXT",
+            b"x".as_slice(),
+            UpdateTime { year: 0, ..time() },
+        ),
+    ];
+    for (slot, name, data, timestamp) in cases {
+        let mut legacy = Cursor::new(before.clone());
+        let legacy_error =
+            import_into(&mut legacy, capacity, slot, name, data, false, timestamp).unwrap_err();
+        let mut disk = GotekDisk::open(Cursor::new(before.clone()), capacity).unwrap();
+        let slot_error = match disk.slot_mut(slot) {
+            Ok(mut selected) => selected
+                .import_file(name, data, false, timestamp)
+                .unwrap_err(),
+            Err(error) => error,
+        };
+        assert_eq!(legacy_error.to_string(), slot_error.to_string());
+        assert_eq!(legacy.into_inner(), before);
+        assert_eq!(disk.into_inner().into_inner(), before);
+    }
+    let mut legacy = Cursor::new(before.clone());
+    import_into(
+        &mut legacy,
+        capacity,
+        1,
+        "HELLO.TXT",
+        b"hello",
+        false,
+        time(),
+    )
+    .unwrap();
+    let mut disk = GotekDisk::open(Cursor::new(before), capacity).unwrap();
+    disk.slot_mut(1)
+        .unwrap()
+        .import_file("HELLO.TXT", b"hello", false, time())
+        .unwrap();
+    assert_eq!(
+        disk.slot(1).unwrap().read_file("HELLO.TXT").unwrap(),
+        b"hello"
+    );
+    let legacy_duplicate = import_into(
+        &mut legacy,
+        capacity,
+        1,
+        "HELLO.TXT",
+        b"other",
+        false,
+        time(),
+    )
+    .unwrap_err();
+    let slot_duplicate = disk
+        .slot_mut(1)
+        .unwrap()
+        .import_file("HELLO.TXT", b"other", false, time())
+        .unwrap_err();
+    assert_eq!(legacy_duplicate.to_string(), slot_duplicate.to_string());
+    assert_eq!(
+        disk.slot(1).unwrap().read_file("HELLO.TXT").unwrap(),
+        b"hello"
+    );
 }

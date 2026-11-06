@@ -8,7 +8,7 @@ use std::{
 use gotek_core::{
     FormatOptions, GotekError, SlotFormatOptions, create_image,
     fat12::Bpb,
-    format_image, generate_boot_sector,
+    format_image, format_on, generate_boot_sector,
     geometry::FloppyGeometry,
     inspect,
     layout::{METADATA_OFFSET_BYTES, SECTOR_BYTES, SLOT_STRIDE_BYTES, slot_offset},
@@ -37,6 +37,25 @@ fn options(geometry: FloppyGeometry, count: u16) -> FormatOptions {
         },
     )
     .unwrap()
+}
+
+#[test]
+fn descriptor_format_checks_capacity_before_writing_and_preserves_tail() {
+    let options = options(FloppyGeometry::Kb720, 1);
+    let required = options.image_size_bytes().unwrap();
+    let before = vec![0x5a; required as usize + 16];
+    let mut target = Cursor::new(before.clone());
+    assert!(matches!(
+        format_on(&mut target, required - 1, &options),
+        Err(GotekError::ImageTooSmall { .. })
+    ));
+    assert_eq!(target.into_inner(), before);
+
+    let mut target = Cursor::new(before.clone());
+    format_on(&mut target, required, &options).unwrap();
+    let after = target.into_inner();
+    assert_eq!(&after[required as usize..], &before[required as usize..]);
+    assert_eq!(inspect(&mut Cursor::new(&after)).unwrap().floppy_count, 1);
 }
 
 /// Each test owns a create_new file. Drop closes it before deleting the path.

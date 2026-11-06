@@ -6,14 +6,14 @@ use crate::{
     layout::{METADATA_OFFSET_BYTES, SECTOR_BYTES, SLOT_STRIDE_BYTES, checked_offset, slot_offset},
     metadata::parse_count,
 };
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 /// An already-open Gotek image or device with a validated slot layout.
 ///
 /// Owns `target`; byte zero must be the start of slot zero. `capacity` is the
 /// accessible length in bytes. Opening validates slot zero and the declared
 /// slot region; other slots are checked when accessed. The extra boundary
-/// sector is required only for mutable access. Only structural layout is
+/// sector is checked only by mutations that synchronize it. Only structural layout is
 /// cached, not labels or warnings.
 /// The caller must prevent external changes to the target while this value is
 /// in use, and must supply an accurate capacity for device descriptors.
@@ -134,6 +134,53 @@ impl<R: Read + Seek> GotekDisk<R> {
         detect_geometry(&bpb, self.boundary_offset)?;
         self.boundary_validated = true;
         Ok(())
+    }
+}
+
+/// Tracks attempted target writes so a failed mutation cannot reuse stale layout.
+pub(crate) struct MutationTarget<'a, R> {
+    inner: &'a mut R,
+    write_started: bool,
+}
+
+impl<R: Read> Read for MutationTarget<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for MutationTarget<'_, R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl<R: Write> Write for MutationTarget<'_, R> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_started = true;
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<R: Read + Write + Seek> GotekDisk<R> {
+    pub(crate) fn mutate<T>(
+        &mut self,
+        operation: impl FnOnce(&mut MutationTarget<'_, R>) -> Result<T, GotekError>,
+    ) -> Result<T, GotekError> {
+        self.ensure_healthy()?;
+        let mut target = MutationTarget {
+            inner: &mut self.target,
+            write_started: false,
+        };
+        let result = operation(&mut target);
+        if result.is_err() && target.write_started {
+            self.poisoned = true;
+        }
+        result
     }
 }
 

@@ -80,7 +80,7 @@ fn bad_later_slot_does_not_block_healthy_slot_or_convenience_readers() {
 }
 
 #[test]
-fn missing_boundary_allows_reads_but_rejects_writable_slot_and_inspection() {
+fn missing_boundary_allows_reads_and_import_but_rejects_boundary_writes() {
     let mut bytes = image(1);
     bytes.truncate(SLOT_STRIDE_BYTES as usize);
     let original = bytes.clone();
@@ -95,12 +95,36 @@ fn missing_boundary_allows_reads_but_rejects_writable_slot_and_inspection() {
         exported,
         bytes[..FloppyGeometry::Kb720.payload_bytes() as usize]
     );
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 6,
+        hour: 12,
+        minute: 0,
+        second: 0,
+    };
+    let mut writable = disk.slot_mut(0).unwrap();
     assert!(matches!(
-        disk.slot_mut(0),
+        writable.set_label("NEW LABEL"),
         Err(GotekError::ImageTooSmall { .. })
     ));
+    assert!(matches!(
+        writable.load_image(&mut Cursor::new(&exported), time),
+        Err(GotekError::ImageTooSmall { .. })
+    ));
+    writable
+        .import_file("HELLO.TXT", b"hello", false, time)
+        .unwrap();
+    assert_eq!(
+        writable.as_slot().unwrap().read_file("HELLO.TXT").unwrap(),
+        b"hello"
+    );
     assert!(matches!(disk.slot(1), Err(GotekError::InvalidSlot { .. })));
-    assert_eq!(disk.into_inner().into_inner(), original);
+    let after = disk.into_inner().into_inner();
+    assert_eq!(
+        &after[FloppyGeometry::Kb720.payload_bytes() as usize..],
+        &original[FloppyGeometry::Kb720.payload_bytes() as usize..]
+    );
     assert!(inspect(&mut Cursor::new(bytes.as_slice())).is_err());
 
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -119,17 +143,95 @@ fn missing_boundary_allows_reads_but_rejects_writable_slot_and_inspection() {
 }
 
 #[test]
-fn malformed_boundary_does_not_block_reads_but_blocks_mutation() {
+fn malformed_boundary_allows_import_but_blocks_boundary_writes() {
     let mut bytes = image(1);
     bytes[SLOT_STRIDE_BYTES as usize + 510] = 0;
     let mut disk = GotekDisk::open(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
     assert_eq!(disk.slot(0).unwrap().geometry(), FloppyGeometry::Kb720);
+    let time = UpdateTime {
+        year: 2026,
+        month: 11,
+        day: 6,
+        hour: 12,
+        minute: 0,
+        second: 0,
+    };
+    let mut slot = disk.slot_mut(0).unwrap();
     assert!(matches!(
-        disk.slot_mut(0),
+        slot.set_label("NEW LABEL"),
         Err(GotekError::InvalidBpb { .. })
     ));
-    assert_eq!(disk.into_inner().into_inner(), bytes);
+    slot.import_file("HELLO.TXT", b"hello", false, time)
+        .unwrap();
+    assert_eq!(
+        slot.as_slot().unwrap().read_file("HELLO.TXT").unwrap(),
+        b"hello"
+    );
+    let after = disk.into_inner().into_inner();
+    assert_eq!(
+        &after[SLOT_STRIDE_BYTES as usize..],
+        &bytes[SLOT_STRIDE_BYTES as usize..]
+    );
     assert!(inspect(&mut Cursor::new(bytes.as_slice())).is_err());
+}
+
+#[test]
+fn nonfinal_mutations_do_not_require_a_boundary() {
+    for damaged in [false, true] {
+        let mut bytes = image(2);
+        let boundary = 2 * SLOT_STRIDE_BYTES as usize;
+        if damaged {
+            bytes[boundary + 510] = 0;
+        } else {
+            bytes.truncate(boundary);
+        }
+        let before = bytes.clone();
+        let time = UpdateTime {
+            year: 2026,
+            month: 11,
+            day: 6,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        };
+        let payload = before[..FloppyGeometry::Kb720.payload_bytes() as usize].to_vec();
+        let mut disk = GotekDisk::open(Cursor::new(bytes), before.len() as u64).unwrap();
+        {
+            let mut first = disk.slot_mut(0).unwrap();
+            first.set_label("FIRST").unwrap();
+            first.import_file("A.TXT", b"abc", false, time).unwrap();
+            assert_eq!(first.as_slot().unwrap().read_file("A.TXT").unwrap(), b"abc");
+            first.load_image(&mut Cursor::new(&payload), time).unwrap();
+        }
+        {
+            let mut last = disk.slot_mut(1).unwrap();
+            last.import_file("B.TXT", b"xyz", false, time).unwrap();
+            assert_eq!(last.as_slot().unwrap().read_file("B.TXT").unwrap(), b"xyz");
+            assert!(last.set_label("LAST").is_err());
+            assert!(last.load_image(&mut Cursor::new(&payload), time).is_err());
+        }
+        let after = disk.into_inner().into_inner();
+        assert_eq!(&after[boundary..], &before[boundary..]);
+        assert_eq!(
+            &after[FloppyGeometry::Kb720.payload_bytes() as usize..SLOT_STRIDE_BYTES as usize],
+            &before[FloppyGeometry::Kb720.payload_bytes() as usize..SLOT_STRIDE_BYTES as usize]
+        );
+    }
+}
+
+#[test]
+fn explicit_capacity_is_authoritative() {
+    let bytes = image(1);
+    assert!(matches!(
+        GotekDisk::open(Cursor::new(bytes.as_slice()), SLOT_STRIDE_BYTES - 1),
+        Err(GotekError::ImageTooSmall { .. })
+    ));
+    let mut disk = GotekDisk::open(Cursor::new(bytes), SLOT_STRIDE_BYTES).unwrap();
+    assert_eq!(disk.slot(0).unwrap().geometry(), FloppyGeometry::Kb720);
+    assert!(matches!(
+        disk.slot_mut(0).unwrap().set_label("DATA"),
+        Err(GotekError::ImageTooSmall { .. })
+    ));
 }
 
 struct CountingReader {

@@ -68,22 +68,17 @@ pub fn load_image(
             path: image.to_path_buf(),
             source,
         })?;
-    if !destination
+    let opened = destination
         .metadata()
-        .map_err(|source| GotekError::Io { offset: 0, source })?
-        .is_file()
-    {
+        .map_err(|source| GotekError::Io { offset: 0, source })?;
+    if !opened.is_file() {
         return Err(GotekError::NotRegularFile);
     }
     let mut source_file = File::open(source).map_err(|source_error| GotekError::DestinationIo {
         path: source.to_path_buf(),
         source: source_error,
     })?;
-    let capacity = destination
-        .metadata()
-        .map_err(|source| GotekError::Io { offset: 0, source })?
-        .len();
-    let mut disk = crate::GotekDisk::open(&mut destination, capacity)?;
+    let mut disk = crate::GotekDisk::open(&mut destination, opened.len())?;
     disk.slot_mut(slot)?
         .load_image_with_record(&mut source_file, &record)
 }
@@ -142,28 +137,24 @@ pub fn save_image(
     Ok(())
 }
 
-pub(crate) struct LoadTarget<'a> {
-    pub(crate) capacity: u64,
+pub(crate) struct LoadTarget {
     pub(crate) start: u64,
-    pub(crate) bpb: &'a Bpb,
+    pub(crate) geometry: crate::geometry::FloppyGeometry,
     pub(crate) boundary_offset: Option<u64>,
 }
 
-/// Replace a validated slot payload from an independent complete floppy reader.
+/// Replace a slot already validated by `GotekDisk`, including its boundary when needed.
 pub(crate) fn load_at<T: Read + Write + Seek + ?Sized, S: Read + Seek + ?Sized>(
     target: &mut T,
-    destination: LoadTarget<'_>,
+    destination: LoadTarget,
     source: &mut S,
     record: &[u8; 31],
-    write_started: &mut bool,
 ) -> Result<Bpb, GotekError> {
     let LoadTarget {
-        capacity,
         start,
-        bpb: destination_bpb,
+        geometry: dest_geometry,
         boundary_offset,
     } = destination;
-    let dest_geometry = detect_geometry(destination_bpb, start)?;
     let source_bpb = Bpb::parse(&read_sector(source, 0)?, 0)?;
     let source_geometry = detect_geometry(&source_bpb, 0)?;
     if source_geometry != dest_geometry {
@@ -182,27 +173,6 @@ pub(crate) fn load_at<T: Read + Write + Seek + ?Sized, S: Read + Seek + ?Sized>(
     let metadata_offset = start
         .checked_add(METADATA_OFFSET_BYTES)
         .ok_or(GotekError::ArithmeticOverflow)?;
-    let required = metadata_offset
-        .checked_add(SECTOR_BYTES as u64)
-        .ok_or(GotekError::ArithmeticOverflow)?;
-    if capacity < required {
-        return Err(GotekError::ImageTooSmall {
-            actual_bytes: capacity,
-            required_bytes: required,
-        });
-    }
-    if let Some(boundary) = boundary_offset {
-        let required = boundary
-            .checked_add(SECTOR_BYTES as u64)
-            .ok_or(GotekError::ArithmeticOverflow)?;
-        if capacity < required {
-            return Err(GotekError::ImageTooSmall {
-                actual_bytes: capacity,
-                required_bytes: required,
-            });
-        }
-        read_sector(target, boundary)?;
-    }
     let mut metadata = read_sector(target, metadata_offset)?;
     source
         .seek(SeekFrom::Start(0))
@@ -223,7 +193,6 @@ pub(crate) fn load_at<T: Read + Write + Seek + ?Sized, S: Read + Seek + ?Sized>(
             offset: start,
             source,
         })?;
-    *write_started = true;
     target
         .write_all(&payload)
         .map_err(|source| GotekError::Io {
@@ -275,12 +244,16 @@ pub(crate) fn save_at<R: Read + Seek + ?Sized, W: Write + ?Sized>(
     while copied < length {
         let remaining = length - copied;
         let count = buffer.len().min(remaining as usize);
-        let read = reader
-            .read(&mut buffer[..count])
-            .map_err(|source| GotekError::Io {
-                offset: start + copied,
-                source,
-            })?;
+        let read = match reader.read(&mut buffer[..count]) {
+            Ok(read) => read,
+            Err(source) if source.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(source) => {
+                return Err(GotekError::Io {
+                    offset: start + copied,
+                    source,
+                });
+            }
+        };
         if read == 0 {
             return Err(GotekError::Io {
                 offset: start + copied,

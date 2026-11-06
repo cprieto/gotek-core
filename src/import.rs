@@ -1,9 +1,9 @@
 use crate::{
-    GotekError,
+    GotekDisk, GotekError,
     fat12::Bpb,
-    inspect::{detect_geometry, read_sector},
-    layout::{METADATA_OFFSET_BYTES, slot_offset},
-    metadata::{UpdateTime, encode_update_time, parse_count},
+    inspect::read_sector,
+    layout::METADATA_OFFSET_BYTES,
+    metadata::{UpdateTime, encode_update_time},
 };
 use std::{
     fs::{self, OpenOptions},
@@ -72,7 +72,7 @@ pub fn import_file(
         overwrite,
         record,
     };
-    import_into_checked(&mut file, capacity.len(), slot, &request)
+    import_validated_into(&mut file, capacity.len(), slot, &request)
 }
 
 pub(crate) struct ImportRequest<'a> {
@@ -116,52 +116,20 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
     overwrite: bool,
     update_time: UpdateTime,
 ) -> Result<(), GotekError> {
-    let record = validate_import(name, update_time)?;
-    let request = ImportRequest {
-        name,
-        bytes,
-        overwrite,
-        record,
-    };
-    import_into_checked(target, capacity, slot, &request)
+    GotekDisk::open(target, capacity)?
+        .slot_mut(slot)?
+        .import_file(name, bytes, overwrite, update_time)
 }
 
-fn import_into_checked<T: Read + Write + Seek + ?Sized>(
+fn import_validated_into<T: Read + Write + Seek + ?Sized>(
     target: &mut T,
     capacity: u64,
     slot: u16,
     request: &ImportRequest<'_>,
 ) -> Result<(), GotekError> {
-    let minimum = METADATA_OFFSET_BYTES
-        .checked_add(512)
-        .ok_or(GotekError::ArithmeticOverflow)?;
-    if capacity < minimum {
-        return Err(GotekError::ImageTooSmall {
-            actual_bytes: capacity,
-            required_bytes: minimum,
-        });
-    }
-    let count = parse_count(&read_sector(target, METADATA_OFFSET_BYTES)?)?;
-    if slot >= count {
-        return Err(GotekError::InvalidSlot { index: slot, count });
-    }
-    let start = slot_offset(u64::from(slot))?;
-    let bpb = Bpb::parse(&read_sector(target, start)?, start)?;
-    detect_geometry(&bpb, start)?;
-    let metadata_offset = start
-        .checked_add(METADATA_OFFSET_BYTES)
-        .ok_or(GotekError::ArithmeticOverflow)?;
-    let required = metadata_offset
-        .checked_add(512)
-        .ok_or(GotekError::ArithmeticOverflow)?;
-    if capacity < required {
-        return Err(GotekError::ImageTooSmall {
-            actual_bytes: capacity,
-            required_bytes: required,
-        });
-    }
-    let mut write_started = false;
-    import_at(target, start, &bpb, request, &mut write_started)
+    GotekDisk::open(target, capacity)?
+        .slot_mut(slot)?
+        .import_validated(request)
 }
 
 /// Import using a slot BPB already validated by the disk owner.
@@ -170,7 +138,6 @@ pub(crate) fn import_at<T: Read + Write + Seek + ?Sized>(
     start: u64,
     bpb: &Bpb,
     request: &ImportRequest<'_>,
-    write_started: &mut bool,
 ) -> Result<(), GotekError> {
     let ImportRequest {
         name,
@@ -228,12 +195,12 @@ pub(crate) fn import_at<T: Read + Write + Seek + ?Sized>(
                 offset: start,
                 source,
             })?;
-        if let Some(is_file) = existing
-            && (!is_file || !*overwrite)
-        {
-            return Err(GotekError::InvalidFormatOptions(
-                "destination already exists",
-            ));
+        if let Some(is_file) = existing {
+            if !is_file || !*overwrite {
+                return Err(GotekError::InvalidFormatOptions(
+                    "destination already exists",
+                ));
+            }
         }
         let stats = fs.stats().map_err(|source| GotekError::Io {
             offset: start,
@@ -277,7 +244,6 @@ pub(crate) fn import_at<T: Read + Write + Seek + ?Sized>(
             offset: start,
             source,
         })?;
-    *write_started = true;
     target
         .write_all(&payload)
         .map_err(|source| GotekError::Io {

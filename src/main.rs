@@ -1,14 +1,18 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use gotek_core::{
     FormatOptions, GotekImageInfo, SlotFormatOptions, SlotInfo, ValidationWarning, create_image,
-    format_existing_image, geometry::FloppyGeometry, inspect, metadata::UpdateTime,
+    format_existing_image, geometry::FloppyGeometry, inspect, list_files, metadata::UpdateTime,
+    read_file,
 };
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io::{self, Seek, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
+
+#[cfg(target_os = "linux")]
+mod linux_device;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Inspect and initialize original Gotek floppy images")]
@@ -78,7 +82,7 @@ enum Command {
         /// Image file or block device to inspect.
         path: PathBuf,
     },
-    /// Initialize a new image, or overwrite a regular image with --force.
+    /// Initialize a new image, or reformat an existing image or USB device with --force.
     Init {
         /// Output image path (must not exist unless --force is used).
         path: PathBuf,
@@ -88,7 +92,7 @@ enum Command {
         /// Floppy geometry: 720k, 1.2m, or 1.44m.
         #[arg(long, value_enum)]
         size: FloppySize,
-        /// Reinitialize an existing regular image, preserving its total size.
+        /// Reinitialize an existing regular image or whole USB block device.
         #[arg(long)]
         force: bool,
     },
@@ -176,9 +180,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Ls { image, slot } => {
             let mut source = File::open(image)?;
-            let capacity = source.seek(io::SeekFrom::End(0))?;
-            let mut disk = gotek_core::GotekDisk::open(source, capacity)?;
-            for entry in disk.slot(slot)?.files()? {
+            for entry in list_files(&mut source, slot)? {
                 println!("{:02x}\t{}\t{}", entry.attributes, entry.size, entry.name);
             }
         }
@@ -188,9 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             filename,
         } => {
             let mut source = File::open(image)?;
-            let capacity = source.seek(io::SeekFrom::End(0))?;
-            let mut disk = gotek_core::GotekDisk::open(source, capacity)?;
-            let bytes = disk.slot(slot)?.read_file(&filename)?;
+            let bytes = read_file(&mut source, slot, &filename)?;
             io::stdout().lock().write_all(&bytes)?;
         }
         Command::Inspect { path } => {
@@ -322,24 +322,44 @@ fn initialize_image(
     force: bool,
 ) -> Result<u64, Box<dyn Error>> {
     let required_bytes = options.image_size_bytes()?;
-    if force {
-        match fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                if !metadata.is_file() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "--force requires a regular image file; devices, directories, and symlinks are refused").into());
-                }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            if force {
                 // Never truncate or append: the formatter only replaces the prefix
                 // needed by the requested slots and their boundary sector.
                 let mut image = OpenOptions::new().write(true).open(path)?;
                 format_existing_image(&mut image, options)?;
                 return Ok(image.metadata()?.len());
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            create_image(path, options)?;
         }
+        Ok(metadata) => {
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if metadata.file_type().is_block_device() {
+                    return linux_device::format_device(path, &metadata, options, force);
+                }
+            }
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination must be a regular image file or a whole USB block device; symlinks and other file types are refused").into());
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if is_device_namespace(path)? {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "refusing to create a missing path under /dev; select an existing USB block device").into());
+            }
+            create_image(path, options)?;
+        }
+        Err(error) => return Err(error.into()),
     }
-    create_image(path, options)?;
     Ok(required_bytes)
+}
+
+fn is_device_namespace(path: &Path) -> io::Result<bool> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok(fs::canonicalize(parent)?.starts_with("/dev"))
 }
 
 fn print_image_info(info: &GotekImageInfo) {
@@ -397,4 +417,16 @@ fn print_slot(slot: &SlotInfo) {
 
 fn print_warning(warning: &ValidationWarning) {
     println!("  {:?}: {:?}", warning.location, warning.kind);
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::is_device_namespace;
+    use std::path::Path;
+
+    #[test]
+    fn missing_device_paths_are_not_image_creation_targets() {
+        assert!(is_device_namespace(Path::new("/dev/nonexistent-gotek-device")).unwrap());
+        assert!(!is_device_namespace(Path::new("new-image.img")).unwrap());
+    }
 }

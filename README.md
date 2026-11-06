@@ -14,7 +14,8 @@ without mounting the image.
 - Inspect slot counts, floppy geometries, volume labels, and timestamps, with
   validation errors and warnings.
 - Create empty images with 1–100 slots using **720K, 1.2 MB, or 1.44 MB** geometry.
-- Reinitialize existing regular image files while preserving their total size.
+- Reinitialize existing regular image files; the Linux CLI can also format
+  authorized whole USB block devices.
 - List and read FAT12 files, including VFAT long names and nested paths; import
   single files and inspect cluster usage.
 - Change slot volume labels and transfer complete floppy images.
@@ -107,7 +108,10 @@ saves a file without replacing an existing destination.
 `GotekDisk::open()` checks slot zero, the slot count, and declared capacity.
 Each slot is validated when accessed, so a damaged slot does not block reading
 another. Read-only access works without the extra boundary sector; mutation
-requires it. Use `inspect()` to check the complete container.
+checks it only when changing the final slot's label or complete image. Use
+`inspect()` to check the complete container. For block devices, including Linux
+`/dev/sdX`, `metadata().len()` may return zero; the application must supply the
+actual device capacity through UDisks2 or the operating system.
 
 ### Load a complete floppy image
 
@@ -194,6 +198,9 @@ gotek import image.img --slot 5 HELLO.TXT --force
 
 # Reinitialize an existing image (destructive: back it up first).
 gotek init new-image.img --floppies 50 --size 1.44m --force
+
+# Linux: format an unmounted whole USB device (destroys its existing data).
+sudo gotek init /dev/sdX --floppies 100 --size 1.44m --force
 ```
 
 `--size` accepts `720k`, `1.2m`, and `1.44m`. `cat` writes binary bytes to stdout
@@ -204,9 +211,11 @@ the destination. Parent directories must already exist.
 CLI initialization currently uses fixed serial
 `0x12345678` and timestamp `2026-11-01 12:00:00`; use the library for custom values.
 
-Without `--force`, initialization refuses existing paths. With `--force`, it
-reinitializes a regular image file large enough for the requested slots, preserving
-its length and trailing data. Back up the image before reinitializing it.
+Without `--force`, initialization refuses existing paths. For regular images,
+`--force` preserves the file length and trailing data. On Linux, device
+formatting requires `--force`, an unmounted whole USB block device, an exclusive
+open, and sufficient capacity. It never unmounts the device. Back up any data
+you need before formatting.
 
 `import` and `extract` transfer individual FAT12 files. `load-image` and
 `save-image` transfer complete floppy images; `save-image` refuses to replace an

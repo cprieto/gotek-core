@@ -23,8 +23,11 @@ documentation = "https://docs.rs/gotek-core"
 clap = { version = "4.6.7", features = ["derive"], optional = true }
 fatfs = "0.3.6"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
+
 [features]
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:libc"]
 
 [[bin]]
 name = "gotek"

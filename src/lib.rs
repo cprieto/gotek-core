@@ -57,7 +57,7 @@ pub use error::GotekError;
 pub use extract::extract_file;
 pub use files::{FileInfo, list_files, read_file};
 pub use format::{
-    FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image,
+    FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image, format_on,
     generate_boot_sector,
 };
 pub use import::{import_file, import_into};
