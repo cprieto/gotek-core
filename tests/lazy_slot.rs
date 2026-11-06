@@ -25,7 +25,7 @@ fn image(count: u16) -> Vec<u8> {
     let mut output = Cursor::new(Vec::new());
     format_image(
         &mut output,
-        &FormatOptions::new(FloppyGeometry::Kb720, count, slot).unwrap(),
+        &FormatOptions::with_slot_options(FloppyGeometry::Kb720, count, slot).unwrap(),
     )
     .unwrap();
     output.into_inner()
@@ -109,11 +109,11 @@ fn missing_boundary_allows_reads_and_import_but_rejects_boundary_writes() {
         Err(GotekError::ImageTooSmall { .. })
     ));
     assert!(matches!(
-        writable.load_image(&mut Cursor::new(&exported), time),
+        writable.load_image_with_time(&mut Cursor::new(&exported), time),
         Err(GotekError::ImageTooSmall { .. })
     ));
     writable
-        .import_file("HELLO.TXT", b"hello", false, time)
+        .import_file_with_time("HELLO.TXT", b"hello", false, time)
         .unwrap();
     assert_eq!(
         writable.as_slot().unwrap().read_file("HELLO.TXT").unwrap(),
@@ -161,7 +161,7 @@ fn malformed_boundary_allows_import_but_blocks_boundary_writes() {
         slot.set_label("NEW LABEL"),
         Err(GotekError::InvalidBpb { .. })
     ));
-    slot.import_file("HELLO.TXT", b"hello", false, time)
+    slot.import_file_with_time("HELLO.TXT", b"hello", false, time)
         .unwrap();
     assert_eq!(
         slot.as_slot().unwrap().read_file("HELLO.TXT").unwrap(),
@@ -199,16 +199,24 @@ fn nonfinal_mutations_do_not_require_a_boundary() {
         {
             let mut first = disk.slot_mut(0).unwrap();
             first.set_label("FIRST").unwrap();
-            first.import_file("A.TXT", b"abc", false, time).unwrap();
+            first
+                .import_file_with_time("A.TXT", b"abc", false, time)
+                .unwrap();
             assert_eq!(first.as_slot().unwrap().read_file("A.TXT").unwrap(), b"abc");
-            first.load_image(&mut Cursor::new(&payload), time).unwrap();
+            first
+                .load_image_with_time(&mut Cursor::new(&payload), time)
+                .unwrap();
         }
         {
             let mut last = disk.slot_mut(1).unwrap();
-            last.import_file("B.TXT", b"xyz", false, time).unwrap();
+            last.import_file_with_time("B.TXT", b"xyz", false, time)
+                .unwrap();
             assert_eq!(last.as_slot().unwrap().read_file("B.TXT").unwrap(), b"xyz");
             assert!(last.set_label("LAST").is_err());
-            assert!(last.load_image(&mut Cursor::new(&payload), time).is_err());
+            assert!(
+                last.load_image_with_time(&mut Cursor::new(&payload), time)
+                    .is_err()
+            );
         }
         let after = disk.into_inner().into_inner();
         assert_eq!(&after[boundary..], &before[boundary..]);

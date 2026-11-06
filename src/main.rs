@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use gotek_core::{
-    FormatOptions, GotekImageInfo, SlotFormatOptions, SlotInfo, ValidationWarning, create_image,
-    format_existing_image, geometry::FloppyGeometry, inspect, list_files, metadata::UpdateTime,
-    read_file,
+    FormatOptions, GotekImageInfo, SlotInfo, ValidationWarning, create_image,
+    format_existing_image, geometry::FloppyGeometry, inspect, list_files, read_file,
 };
 use std::{
     error::Error,
@@ -133,15 +132,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             slot,
             source,
         } => {
-            let time = UpdateTime {
-                year: 2026,
-                month: 11,
-                day: 1,
-                hour: 12,
-                minute: 0,
-                second: 0,
-            };
-            gotek_core::load_image(image, slot, source, time)
+            gotek_core::load_image(image, slot, source)
                 .map_err(|error| io::Error::other(error.to_string()))?;
         }
         Command::Import {
@@ -151,15 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             name,
             force,
         } => {
-            let time = UpdateTime {
-                year: 2026,
-                month: 11,
-                day: 1,
-                hour: 12,
-                minute: 0,
-                second: 0,
-            };
-            gotek_core::import_file(image, slot, source, name.as_deref(), force, time)?;
+            gotek_core::import_file(image, slot, source, name.as_deref(), force)?;
         }
         Command::Extract {
             image,
@@ -204,22 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             size,
             force,
         } => {
-            // Fixed, deterministic test inputs. The formatter intentionally does not
-            // invent timestamps or serial numbers; we can expose these later.
-            let timestamp = UpdateTime {
-                year: 2026,
-                month: 11,
-                day: 1,
-                hour: 12,
-                minute: 0,
-                second: 0,
-            };
-            let slot = SlotFormatOptions {
-                volume_serial: 0x1234_5678,
-                update_time: timestamp,
-                root_label_time: timestamp,
-            };
-            let options = FormatOptions::new(size.into(), floppies, slot)?;
+            let options = FormatOptions::new(size.into(), floppies)?;
             let bytes = initialize_image(&path, &options, force)?;
             let action = if force { "Initialized" } else { "Created" };
             println!(

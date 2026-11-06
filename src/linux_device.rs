@@ -375,7 +375,7 @@ mod tests {
             minute: 0,
             second: 0,
         };
-        let options = FormatOptions::new(
+        let options = FormatOptions::with_slot_options(
             FloppyGeometry::Kb720,
             1,
             SlotFormatOptions {

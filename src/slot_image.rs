@@ -3,7 +3,7 @@ use crate::{
     fat12::Bpb,
     inspect::{detect_geometry, read_sector},
     layout::{METADATA_OFFSET_BYTES, SECTOR_BYTES},
-    metadata::{UpdateTime, encode_update_time},
+    metadata::{UpdateTime, current_local_time, encode_update_time},
 };
 use std::{
     fs::{self, File, OpenOptions},
@@ -19,8 +19,21 @@ use std::{
 /// `UPDATE TIME` is changed; its gap, other metadata, and other slots are
 /// preserved. For the final slot, the extra boundary boot-sector copy is
 /// synchronized with the imported boot sector. Back up the destination: a
-/// write failure can leave partial data.
+/// write failure can leave partial data. `UPDATE TIME` uses the current local
+/// clock; use [`load_image_with_time`] for a caller-supplied timestamp.
 pub fn load_image(
+    image: impl AsRef<Path>,
+    slot: u16,
+    source: impl AsRef<Path>,
+) -> Result<(), GotekError> {
+    load_image_with_time(image, slot, source, current_local_time()?)
+}
+
+/// Replace a slot with a complete image using an explicit `UPDATE TIME` value.
+///
+/// The same regular-file, geometry, alias, and boundary safeguards as
+/// [`load_image`] apply.
+pub fn load_image_with_time(
     image: impl AsRef<Path>,
     slot: u16,
     source: impl AsRef<Path>,

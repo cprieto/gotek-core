@@ -3,7 +3,7 @@ use gotek_core::{
     geometry::FloppyGeometry,
     inspect,
     layout::{METADATA_OFFSET_BYTES, SLOT_STRIDE_BYTES},
-    load_image,
+    load_image_with_time,
     metadata::UpdateTime,
     read_file,
 };
@@ -29,7 +29,11 @@ fn bank(geometry: FloppyGeometry) -> Vec<u8> {
         root_label_time: time(),
     };
     let mut writer = Cursor::new(Vec::new());
-    format_image(&mut writer, &FormatOptions::new(geometry, 2, slot).unwrap()).unwrap();
+    format_image(
+        &mut writer,
+        &FormatOptions::with_slot_options(geometry, 2, slot).unwrap(),
+    )
+    .unwrap();
     writer.into_inner()
 }
 fn dir() -> std::path::PathBuf {
@@ -73,7 +77,7 @@ fn load_each_geometry_preserves_everything_outside_payload_and_timestamp() {
             second: 12,
             ..time()
         };
-        load_image(&image, 1, &source, updated).unwrap();
+        load_image_with_time(&image, 1, &source, updated).unwrap();
         let after = fs::read(&image).unwrap();
         assert_eq!(&after[start..start + len], floppy);
         assert_eq!(&after[..start], &before[..start]);
@@ -126,29 +130,49 @@ fn load_rejects_bad_inputs_without_writing() {
         bank(FloppyGeometry::Mb1440)[..FloppyGeometry::Mb1440.payload_bytes() as usize].to_vec(),
     ] {
         fs::write(&source, bad).unwrap();
-        assert!(load_image(&image, 1, &source, time()).is_err());
+        assert!(load_image_with_time(&image, 1, &source, time()).is_err());
         assert_eq!(fs::read(&image).unwrap(), before);
     }
     fs::write(&source, &valid).unwrap();
-    assert!(load_image(&image, 2, &source, time()).is_err());
+    assert!(load_image_with_time(&image, 2, &source, time()).is_err());
     let invalid = UpdateTime {
         month: 13,
         ..time()
     };
-    assert!(load_image(&image, 1, &source, invalid).is_err());
-    assert!(load_image(&image, 1, &image, time()).is_err());
+    assert!(load_image_with_time(&image, 1, &source, invalid).is_err());
+    assert!(load_image_with_time(&image, 1, &image, time()).is_err());
     let alias = folder.join("alias.img");
     fs::hard_link(&image, &alias).unwrap();
-    assert!(load_image(&image, 1, &alias, time()).is_err());
+    assert!(load_image_with_time(&image, 1, &alias, time()).is_err());
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
         let link = folder.join("link.img");
         symlink(&image, &link).unwrap();
-        assert!(load_image(&link, 1, &source, time()).is_err());
+        assert!(load_image_with_time(&link, 1, &source, time()).is_err());
     }
-    assert!(load_image(&folder, 1, &source, time()).is_err());
+    assert!(load_image_with_time(&folder, 1, &source, time()).is_err());
     assert_eq!(fs::read(&image).unwrap(), before);
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn path_load_uses_current_timestamp_by_default() {
+    let folder = dir();
+    let image = folder.join("bank.img");
+    let source = folder.join("floppy.img");
+    let before = bank(FloppyGeometry::Kb720);
+    let payload = &before[..FloppyGeometry::Kb720.payload_bytes() as usize];
+    fs::write(&image, &before).unwrap();
+    fs::write(&source, payload).unwrap();
+    gotek_core::load_image(&image, 1, &source).unwrap();
+    let info = inspect(&mut fs::File::open(&image).unwrap()).unwrap();
+    assert!(info.slots[1].metadata.update_time.is_some());
+    assert_eq!(
+        &fs::read(&image).unwrap()
+            [SLOT_STRIDE_BYTES as usize..SLOT_STRIDE_BYTES as usize + payload.len()],
+        payload
+    );
     fs::remove_dir_all(folder).unwrap();
 }
 
@@ -163,7 +187,7 @@ fn nonfinal_replacement_preserves_boundary_and_other_slot() {
     floppy[62] ^= 0x5a;
     fs::write(&image, &before).unwrap();
     fs::write(&source, &floppy).unwrap();
-    load_image(&image, 0, &source, time()).unwrap();
+    load_image_with_time(&image, 0, &source, time()).unwrap();
     let after = fs::read(&image).unwrap();
     assert_eq!(&after[..payload_len], &floppy);
     assert_eq!(&after[payload_len..], &before[payload_len..]);
@@ -186,7 +210,7 @@ fn invalid_timestamp_precedes_destination_open() {
         ..time()
     };
     assert!(matches!(
-        load_image(&absent, 0, &source, invalid),
+        load_image_with_time(&absent, 0, &source, invalid),
         Err(gotek_core::GotekError::InvalidFormatOptions(_))
     ));
     assert!(!absent.exists());
@@ -302,7 +326,7 @@ fn load_then_save_image_round_trips() {
     floppy[62] ^= 0x42;
     fs::write(&disk, original).unwrap();
     fs::write(&source, &floppy).unwrap();
-    load_image(&disk, 1, &source, time()).unwrap();
+    load_image_with_time(&disk, 1, &source, time()).unwrap();
     save_image(&disk, 1, &saved).unwrap();
     assert_eq!(fs::read(saved).unwrap(), floppy);
     fs::remove_dir_all(folder).unwrap();

@@ -21,7 +21,7 @@ fn image() -> Vec<u8> {
     let mut output = Cursor::new(Vec::new());
     format_image(
         &mut output,
-        &FormatOptions::new(FloppyGeometry::Kb720, 2, slot).unwrap(),
+        &FormatOptions::with_slot_options(FloppyGeometry::Kb720, 2, slot).unwrap(),
     )
     .unwrap();
     output.into_inner()

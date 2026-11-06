@@ -8,7 +8,7 @@ use crate::{
     inspect::read_sector,
     label::{encode_label, write_slot_label},
     layout::METADATA_OFFSET_BYTES,
-    metadata::{self, SlotMetadata, UpdateTime, encode_update_time},
+    metadata::{self, SlotMetadata, UpdateTime, current_local_time, encode_update_time},
     slot_image,
     usage::{self, SlotUsage},
 };
@@ -166,8 +166,20 @@ impl<R: Read + Write + Seek> SlotMut<'_, R> {
     ///
     /// `name` is a single FAT filename. Existing files require `overwrite`.
     /// Changes are staged before target writes; physical writes are not
-    /// power-failure atomic.
+    /// power-failure atomic. `UPDATE TIME` uses the current local clock; use
+    /// [`Self::import_file_with_time`] to supply one explicitly.
     pub fn import_file(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        overwrite: bool,
+    ) -> Result<(), GotekError> {
+        self.disk.ensure_healthy()?;
+        self.import_file_with_time(name, bytes, overwrite, current_local_time()?)
+    }
+
+    /// Import one FAT12 file using an explicit timestamp for reproducible output.
+    pub fn import_file_with_time(
         &mut self,
         name: &str,
         bytes: &[u8],
@@ -205,8 +217,19 @@ impl<R: Read + Write + Seek> SlotMut<'_, R> {
     /// byte-for-byte. For the final slot, the extra boundary copy is synchronized
     /// with the new boot sector (with its first three bytes zero). This is
     /// destructive and not power-failure atomic. Back up the target first;
-    /// after an I/O failure, reopen the disk before more operations.
+    /// after an I/O failure, reopen the disk before more operations. The
+    /// timestamp uses the current local clock; use [`Self::load_image_with_time`]
+    /// to supply one explicitly.
     pub fn load_image<S: Read + Seek + ?Sized>(
+        &mut self,
+        source: &mut S,
+    ) -> Result<(), GotekError> {
+        self.disk.ensure_healthy()?;
+        self.load_image_with_time(source, current_local_time()?)
+    }
+
+    /// Replace this slot using an explicit `UPDATE TIME` timestamp.
+    pub fn load_image_with_time<S: Read + Seek + ?Sized>(
         &mut self,
         source: &mut S,
         update_time: UpdateTime,

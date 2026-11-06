@@ -1,6 +1,6 @@
 use gotek_core::{
-    FormatOptions, SlotFormatOptions, format_image, geometry::FloppyGeometry, import_file,
-    layout::SLOT_STRIDE_BYTES, metadata::UpdateTime, slot_usage,
+    FormatOptions, SlotFormatOptions, format_image, geometry::FloppyGeometry,
+    import_file_with_time, layout::SLOT_STRIDE_BYTES, metadata::UpdateTime, slot_usage,
 };
 use std::io::Cursor;
 
@@ -21,7 +21,11 @@ fn image(geometry: FloppyGeometry) -> Vec<u8> {
         root_label_time: time(),
     };
     let mut out = Cursor::new(Vec::new());
-    format_image(&mut out, &FormatOptions::new(geometry, 2, slot).unwrap()).unwrap();
+    format_image(
+        &mut out,
+        &FormatOptions::with_slot_options(geometry, 2, slot).unwrap(),
+    )
+    .unwrap();
     out.into_inner()
 }
 fn set_entry(bytes: &mut [u8], fat_start: usize, cluster: usize, value: u16) {
@@ -112,7 +116,7 @@ fn importing_small_file_uses_one_cluster() {
     let source = folder.join("tiny.txt");
     std::fs::write(&disk, image(FloppyGeometry::Kb720)).unwrap();
     std::fs::write(&source, b"x").unwrap();
-    import_file(&disk, 1, &source, None, false, time()).unwrap();
+    import_file_with_time(&disk, 1, &source, None, false, time()).unwrap();
     let u = slot_usage(&mut std::fs::File::open(&disk).unwrap(), 1).unwrap();
     assert_eq!((u.used_clusters, u.free_clusters), (1, 712));
     std::fs::remove_dir_all(folder).unwrap();

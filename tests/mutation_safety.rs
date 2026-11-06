@@ -1,6 +1,6 @@
 use gotek_core::{
     FormatOptions, GotekDisk, GotekError, SlotFormatOptions, format_image,
-    geometry::FloppyGeometry, import_into, metadata::UpdateTime,
+    geometry::FloppyGeometry, import_into_with_time, metadata::UpdateTime,
 };
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
@@ -24,7 +24,7 @@ fn bank() -> Vec<u8> {
     let mut output = Cursor::new(Vec::new());
     format_image(
         &mut output,
-        &FormatOptions::new(FloppyGeometry::Kb720, 2, options).unwrap(),
+        &FormatOptions::with_slot_options(FloppyGeometry::Kb720, 2, options).unwrap(),
     )
     .unwrap();
     output.into_inner()
@@ -81,7 +81,7 @@ fn partial_load_write_poisons_disk() {
     {
         let mut slot = disk.slot_mut(1).unwrap();
         assert!(matches!(
-            slot.load_image(&mut Cursor::new(payload), time()),
+            slot.load_image_with_time(&mut Cursor::new(payload), time()),
             Err(GotekError::Io { .. })
         ));
         assert!(matches!(slot.as_slot(), Err(GotekError::DiskNeedsReopen)));
@@ -98,7 +98,7 @@ fn failed_final_boundary_update_poisons_disk() {
     let error = disk
         .slot_mut(1)
         .unwrap()
-        .load_image(&mut Cursor::new(payload), time())
+        .load_image_with_time(&mut Cursor::new(payload), time())
         .unwrap_err();
     assert!(matches!(error, GotekError::Io { .. }));
     assert!(matches!(disk.slot(0), Err(GotekError::DiskNeedsReopen)));
@@ -110,7 +110,7 @@ fn failed_import_and_label_writes_poison_disk() {
     assert!(matches!(
         disk.slot_mut(0)
             .unwrap()
-            .import_file("A.TXT", b"abc", false, time()),
+            .import_file_with_time("A.TXT", b"abc", false, time()),
         Err(GotekError::Io { .. })
     ));
     assert!(matches!(disk.slot(0), Err(GotekError::DiskNeedsReopen)));
@@ -134,10 +134,13 @@ fn validation_errors_keep_disk_usable_and_unchanged() {
     let wrong = bank();
     {
         let mut slot = disk.slot_mut(1).unwrap();
-        assert!(slot.import_file("A.TXT", b"x", false, bad_time).is_err());
+        assert!(
+            slot.import_file_with_time("A.TXT", b"x", false, bad_time)
+                .is_err()
+        );
         assert!(slot.set_label("TOO LONG A LABEL").is_err());
         assert!(
-            slot.load_image(&mut Cursor::new(&wrong[..10]), time())
+            slot.load_image_with_time(&mut Cursor::new(&wrong[..10]), time())
                 .is_err()
         );
         assert_eq!(slot.as_slot().unwrap().label().unwrap(), "FLPPY1");
@@ -260,11 +263,12 @@ fn descriptor_and_slot_import_validate_consistently() {
     for (slot, name, data, timestamp) in cases {
         let mut legacy = Cursor::new(before.clone());
         let legacy_error =
-            import_into(&mut legacy, capacity, slot, name, data, false, timestamp).unwrap_err();
+            import_into_with_time(&mut legacy, capacity, slot, name, data, false, timestamp)
+                .unwrap_err();
         let mut disk = GotekDisk::open(Cursor::new(before.clone()), capacity).unwrap();
         let slot_error = match disk.slot_mut(slot) {
             Ok(mut selected) => selected
-                .import_file(name, data, false, timestamp)
+                .import_file_with_time(name, data, false, timestamp)
                 .unwrap_err(),
             Err(error) => error,
         };
@@ -273,7 +277,7 @@ fn descriptor_and_slot_import_validate_consistently() {
         assert_eq!(disk.into_inner().into_inner(), before);
     }
     let mut legacy = Cursor::new(before.clone());
-    import_into(
+    import_into_with_time(
         &mut legacy,
         capacity,
         1,
@@ -286,13 +290,13 @@ fn descriptor_and_slot_import_validate_consistently() {
     let mut disk = GotekDisk::open(Cursor::new(before), capacity).unwrap();
     disk.slot_mut(1)
         .unwrap()
-        .import_file("HELLO.TXT", b"hello", false, time())
+        .import_file_with_time("HELLO.TXT", b"hello", false, time())
         .unwrap();
     assert_eq!(
         disk.slot(1).unwrap().read_file("HELLO.TXT").unwrap(),
         b"hello"
     );
-    let legacy_duplicate = import_into(
+    let legacy_duplicate = import_into_with_time(
         &mut legacy,
         capacity,
         1,
@@ -305,7 +309,7 @@ fn descriptor_and_slot_import_validate_consistently() {
     let slot_duplicate = disk
         .slot_mut(1)
         .unwrap()
-        .import_file("HELLO.TXT", b"other", false, time())
+        .import_file_with_time("HELLO.TXT", b"other", false, time())
         .unwrap_err();
     assert_eq!(legacy_duplicate.to_string(), slot_duplicate.to_string());
     assert_eq!(

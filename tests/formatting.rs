@@ -27,7 +27,7 @@ fn timestamp() -> UpdateTime {
 }
 
 fn options(geometry: FloppyGeometry, count: u16) -> FormatOptions {
-    FormatOptions::new(
+    FormatOptions::with_slot_options(
         geometry,
         count,
         SlotFormatOptions {
@@ -37,6 +37,53 @@ fn options(geometry: FloppyGeometry, count: u16) -> FormatOptions {
         },
     )
     .unwrap()
+}
+
+#[test]
+fn default_options_capture_local_time_once_and_generate_slot_serials() {
+    use chrono::TimeZone;
+    let before = chrono::Local::now();
+    let options = FormatOptions::new(FloppyGeometry::Kb720, 3).unwrap();
+    let after = chrono::Local::now();
+    let first = options.slots[0];
+    assert!(options.slots.iter().all(|slot| {
+        slot.update_time == first.update_time && slot.root_label_time == first.update_time
+    }));
+    for (index, slot) in options.slots.iter().enumerate() {
+        assert_eq!(
+            slot.volume_serial,
+            first.volume_serial.wrapping_add(index as u32)
+        );
+    }
+    let time = first.update_time;
+    let captured = chrono::NaiveDate::from_ymd_opt(
+        i32::from(time.year),
+        u32::from(time.month),
+        u32::from(time.day),
+    )
+    .unwrap()
+    .and_hms_opt(
+        u32::from(time.hour),
+        u32::from(time.minute),
+        u32::from(time.second),
+    )
+    .unwrap();
+    let local = chrono::Local.from_local_datetime(&captured);
+    assert!(
+        local
+            .earliest()
+            .into_iter()
+            .chain(local.latest())
+            .any(|candidate| {
+                candidate.timestamp() >= before.timestamp() - 1
+                    && candidate.timestamp() <= after.timestamp()
+            })
+    );
+
+    let mut image = Cursor::new(Vec::new());
+    format_image(&mut image, &options).unwrap();
+    let info = inspect(&mut image).unwrap();
+    assert_eq!(info.slots[0].metadata.update_time, Some(time));
 }
 
 #[test]
@@ -288,7 +335,7 @@ fn captured_bpb_and_root_label_fixtures_match_exactly() {
         assert_eq!(&generated[510..], &[0x55, 0xaa]);
         let bpb = Bpb::parse(&generated, 0).unwrap();
         assert_eq!(bpb.payload_bytes().unwrap(), geometry.payload_bytes());
-        let options = FormatOptions::new(
+        let options = FormatOptions::with_slot_options(
             geometry,
             1,
             SlotFormatOptions {
@@ -326,7 +373,7 @@ fn captured_bpb_and_root_label_fixtures_match_exactly() {
 fn invalid_options_including_later_slots_never_write() {
     for count in [0, 101] {
         assert!(matches!(
-            FormatOptions::new(
+            FormatOptions::with_slot_options(
                 FloppyGeometry::Kb720,
                 count,
                 options(FloppyGeometry::Kb720, 1).slots[0]

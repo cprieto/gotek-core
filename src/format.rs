@@ -1,4 +1,4 @@
-//! Deterministic empty-image generation for the observed ipcas profiles.
+//! Empty-image generation for the observed ipcas profiles.
 use std::{
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -10,7 +10,7 @@ use crate::{
     fat12::Bpb,
     geometry::FloppyGeometry,
     layout::{MAX_SLOTS, METADATA_OFFSET_BYTES, SECTOR_BYTES, checked_offset, slot_offset},
-    metadata::{UpdateTime, encode_update_time},
+    metadata::{UpdateTime, encode_update_time, local_clock},
 };
 
 const BOOT_CODE_OFFSET: usize = 62;
@@ -56,7 +56,7 @@ pub struct SlotFormatOptions {
     pub root_label_time: UpdateTime,
 }
 
-/// Configuration for a uniform-geometry image with deterministic per-slot inputs.
+/// Configuration for a uniform-geometry image with resolved per-slot inputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatOptions {
     /// FAT12 payload geometry for every slot; the outer stride stays fixed.
@@ -66,12 +66,42 @@ pub struct FormatOptions {
 }
 
 impl FormatOptions {
-    /// Repeat the same variable inputs across `slot_count` slots.
+    /// Create formatting options using the current local time and generated serials.
     ///
-    /// Labels are still numbered independently. The returned options can be edited
-    /// to use distinct serials or timestamps. Invalid inputs are rejected here and
-    /// revalidated before formatting.
-    pub fn new(
+    /// The clock is read once. All slots receive the same `update_time` and
+    /// `root_label_time`; each receives a distinct 32-bit volume serial. The
+    /// resulting options can be inspected or edited before writing. Local years
+    /// outside FAT's 1980–2107 range are rejected.
+    pub fn new(geometry: FloppyGeometry, slot_count: u16) -> Result<Self, GotekError> {
+        if !(1..=MAX_SLOTS).contains(&slot_count) {
+            return Err(GotekError::InvalidSlotCount(slot_count));
+        }
+        let (now, time) = local_clock()?;
+        let first_serial = (now.timestamp() as u32).rotate_left(7)
+            ^ now.timestamp_subsec_nanos()
+            ^ std::process::id();
+        let first = SlotFormatOptions {
+            volume_serial: first_serial,
+            update_time: time,
+            root_label_time: time,
+        };
+        validate_slot_options(first)?;
+        Ok(Self {
+            geometry,
+            slots: (0..slot_count)
+                .map(|index| SlotFormatOptions {
+                    volume_serial: first_serial.wrapping_add(u32::from(index)),
+                    ..first
+                })
+                .collect(),
+        })
+    }
+
+    /// Repeat explicit metadata across slots for reproducible, byte-exact output.
+    ///
+    /// Callers may edit `slots` afterward to set individual serials or times.
+    /// Invalid inputs are rejected here and revalidated before formatting.
+    pub fn with_slot_options(
         geometry: FloppyGeometry,
         slot_count: u16,
         slot: SlotFormatOptions,
@@ -162,18 +192,9 @@ pub fn generate_boot_sector(
 /// The image is flushed, but no durable-storage synchronization is requested.
 ///
 /// ```no_run
-/// use gotek_core::{FormatOptions, SlotFormatOptions, create_image};
-/// use gotek_core::{geometry::FloppyGeometry, metadata::UpdateTime};
+/// use gotek_core::{FormatOptions, create_image, geometry::FloppyGeometry};
 ///
-/// let time = UpdateTime {
-///     year: 2026, month: 10, day: 31, hour: 13, minute: 12, second: 19,
-/// };
-/// let slot = SlotFormatOptions {
-///     volume_serial: 0x1234_5678,
-///     update_time: time,
-///     root_label_time: time,
-/// };
-/// let options = FormatOptions::new(FloppyGeometry::Mb1440, 50, slot)?;
+/// let options = FormatOptions::new(FloppyGeometry::Mb1440, 50)?;
 /// create_image("new-image.img", &options)?;
 /// # Ok::<(), gotek_core::GotekError>(())
 /// ```

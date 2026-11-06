@@ -3,6 +3,7 @@ use crate::{
     GotekError,
     layout::{MAX_SLOTS, SECTOR_BYTES},
 };
+use chrono::{Datelike, Local, Timelike};
 
 const COUNT_RECORD_OFFSET: usize = 0x50;
 const COUNT_PREFIX: &[u8] = b"MAX BLOCK:";
@@ -23,6 +24,27 @@ pub struct UpdateTime {
     pub minute: u8,
     /// Second (0–59).
     pub second: u8,
+}
+
+/// Capture the local clock once for a mutation or formatting operation.
+pub(crate) fn current_local_time() -> Result<UpdateTime, GotekError> {
+    Ok(local_clock()?.1)
+}
+
+pub(crate) fn local_clock() -> Result<(chrono::DateTime<Local>, UpdateTime), GotekError> {
+    let now = Local::now();
+    let year = u16::try_from(now.year()).map_err(|_| {
+        GotekError::InvalidFormatOptions("local year is outside the supported range")
+    })?;
+    let time = UpdateTime {
+        year,
+        month: now.month() as u8,
+        day: now.day() as u8,
+        hour: now.hour() as u8,
+        minute: now.minute() as u8,
+        second: now.second() as u8,
+    };
+    Ok((now, time))
 }
 
 /// Recognized metadata from a single slot.

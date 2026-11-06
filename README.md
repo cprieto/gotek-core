@@ -49,26 +49,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Create an image
 
 ```rust,no_run
-use gotek_core::{FormatOptions, SlotFormatOptions, create_image};
-use gotek_core::{geometry::FloppyGeometry, metadata::UpdateTime};
+use gotek_core::{FormatOptions, create_image, geometry::FloppyGeometry};
 
 fn main() -> Result<(), gotek_core::GotekError> {
-    let time = UpdateTime {
-        year: 2026, month: 11, day: 1, hour: 12, minute: 0, second: 0,
-    };
-    let slot = SlotFormatOptions {
-        volume_serial: 0x1234_5678,
-        update_time: time,
-        root_label_time: time,
-    };
-    let options = FormatOptions::new(FloppyGeometry::Mb1440, 50, slot)?;
+    let options = FormatOptions::new(FloppyGeometry::Mb1440, 50)?;
     create_image("new-image.img", &options)?;
     Ok(())
 }
 ```
 
-`create_image` refuses to replace an existing path. Supply serials and timestamps
-explicitly; edit `options.slots` to use different values for individual slots.
+`create_image` refuses to replace an existing path. `FormatOptions::new()`
+captures the current local time once and generates slot serials. Use
+`FormatOptions::with_slot_options()` for reproducible serials and timestamps;
+edit `options.slots` for per-slot values.
 Open an existing image with `GotekDisk::open(target, capacity)` and call
 `disk.slot_mut(5)?.set_label("DATA DISK")` to rename a slot. The path-based
 `set_slot_label()` helper retains regular-image-file checks.
@@ -119,15 +112,14 @@ actual device capacity through UDisks2 or the operating system.
 same geometry. `Slot::save_image()` exports its exact payload bytes.
 
 ```rust,no_run
-use gotek_core::{GotekDisk, metadata::UpdateTime};
+use gotek_core::GotekDisk;
 use std::fs::{File, OpenOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = OpenOptions::new().read(true).write(true).open("disk.img")?;
     let capacity = image.metadata()?.len();
     let mut disk = GotekDisk::open(image, capacity)?;
-    let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
-    disk.slot_mut(5)?.load_image(&mut File::open("boot.img")?, time)?;
+    disk.slot_mut(5)?.load_image(&mut File::open("boot.img")?)?;
     let mut output = OpenOptions::new().write(true).create_new(true).open("saved.img")?;
     disk.slot(5)?.save_image(&mut output)?;
     Ok(())
@@ -137,22 +129,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Import a file
 
 ```rust,no_run
-use gotek_core::{GotekDisk, metadata::UpdateTime};
+use gotek_core::GotekDisk;
 use std::fs::{self, OpenOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = OpenOptions::new().read(true).write(true).open("image.img")?;
     let capacity = image.metadata()?.len();
     let mut disk = GotekDisk::open(image, capacity)?;
-    let time = UpdateTime { year: 2026, month: 11, day: 3, hour: 9, minute: 10, second: 11 };
     let bytes = fs::read("HELLO.TXT")?;
-    disk.slot_mut(5)?.import_file("HELLO.TXT", &bytes, false, time)?;
+    disk.slot_mut(5)?.import_file("HELLO.TXT", &bytes, false)?;
     assert_eq!(disk.slot(5)?.read_file("HELLO.TXT")?, bytes);
     Ok(())
 }
 ```
 
 Set `overwrite` to `true` to truncate and replace an existing FAT12 file.
+Imports and image loads use the current local time for `UPDATE TIME`. Use
+the corresponding `*_with_time` APIs when a specific timestamp is needed.
 Back up the image before import or complete-image replacement; physical writes
 are not power-failure atomic. The caller supplies an accurate capacity and
 exclusive access for device descriptors.
@@ -208,8 +201,8 @@ without adding a newline; `extract` saves them to disk. Extraction refuses to
 overwrite existing files unless `--force` is specified, which applies only to
 the destination. Parent directories must already exist.
 
-CLI initialization currently uses fixed serial
-`0x12345678` and timestamp `2026-11-01 12:00:00`; use the library for custom values.
+CLI initialization uses the current local time and generated serials; use the
+library's explicit constructor for reproducible values.
 
 Without `--force`, initialization refuses existing paths. For regular images,
 `--force` preserves the file length and trailing data. On Linux, device

@@ -60,11 +60,11 @@ pub use format::{
     FormatOptions, SlotFormatOptions, create_image, format_existing_image, format_image, format_on,
     generate_boot_sector,
 };
-pub use import::{import_file, import_into};
+pub use import::{import_file, import_file_with_time, import_into, import_into_with_time};
 pub use inspect::{
     GotekImageInfo, SlotInfo, ValidationWarning, WarningKind, WarningLocation, inspect,
 };
 pub use label::{set_slot_label, set_slot_label_on};
 pub use slot::{Slot, SlotMut};
-pub use slot_image::{load_image, save_image};
+pub use slot_image::{load_image, load_image_with_time, save_image};
 pub use usage::{SlotUsage, slot_usage};

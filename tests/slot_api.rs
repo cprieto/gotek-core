@@ -6,6 +6,31 @@ use gotek_core::{
 };
 use std::io::{Cursor, Write};
 
+fn assert_recent_local_time(time: UpdateTime) {
+    use chrono::TimeZone;
+    let captured = chrono::NaiveDate::from_ymd_opt(
+        i32::from(time.year),
+        u32::from(time.month),
+        u32::from(time.day),
+    )
+    .unwrap()
+    .and_hms_opt(
+        u32::from(time.hour),
+        u32::from(time.minute),
+        u32::from(time.second),
+    )
+    .unwrap();
+    let local = chrono::Local.from_local_datetime(&captured);
+    let now = chrono::Local::now().timestamp();
+    assert!(
+        local
+            .earliest()
+            .into_iter()
+            .chain(local.latest())
+            .any(|candidate| { (now - candidate.timestamp()).abs() <= 10 })
+    );
+}
+
 fn time() -> UpdateTime {
     UpdateTime {
         year: 2026,
@@ -26,7 +51,7 @@ fn bank(geometry: FloppyGeometry) -> Vec<u8> {
     let mut output = Cursor::new(Vec::new());
     format_image(
         &mut output,
-        &FormatOptions::new(geometry, 2, options).unwrap(),
+        &FormatOptions::with_slot_options(geometry, 2, options).unwrap(),
     )
     .unwrap();
     output.into_inner()
@@ -69,7 +94,7 @@ fn importing_then_reading_reuses_the_same_disk_and_preserves_other_bytes() {
         ..time()
     };
     let mut slot = disk.slot_mut(1).unwrap();
-    slot.import_file("HELLO.TXT", b"hello\0world", false, updated)
+    slot.import_file_with_time("HELLO.TXT", b"hello\0world", false, updated)
         .unwrap();
     assert_eq!(
         slot.as_slot().unwrap().read_file("hello.txt").unwrap(),
@@ -89,7 +114,7 @@ fn importing_then_reading_reuses_the_same_disk_and_preserves_other_bytes() {
         Some(updated)
     );
     assert!(
-        slot.import_file("HELLO.TXT", b"other", false, updated)
+        slot.import_file_with_time("HELLO.TXT", b"other", false, updated)
             .is_err()
     );
     let after = disk.into_inner().into_inner();
@@ -105,6 +130,32 @@ fn importing_then_reading_reuses_the_same_disk_and_preserves_other_bytes() {
 }
 
 #[test]
+fn default_import_and_image_load_use_current_local_time() {
+    let before = bank(FloppyGeometry::Kb720);
+    let source = before[..FloppyGeometry::Kb720.payload_bytes() as usize].to_vec();
+    let mut disk = GotekDisk::open(Cursor::new(before.clone()), before.len() as u64).unwrap();
+    let mut slot = disk.slot_mut(1).unwrap();
+    slot.import_file("AUTO.TXT", b"hello", false).unwrap();
+    assert_recent_local_time(
+        slot.as_slot()
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .update_time
+            .unwrap(),
+    );
+    slot.load_image(&mut Cursor::new(source)).unwrap();
+    assert_recent_local_time(
+        slot.as_slot()
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .update_time
+            .unwrap(),
+    );
+}
+
+#[test]
 fn load_export_refreshes_cached_bpb_and_rejects_mismatched_geometry() {
     let before = bank(FloppyGeometry::Kb720);
     let mut disk = GotekDisk::open(Cursor::new(before.clone()), before.len() as u64).unwrap();
@@ -113,7 +164,7 @@ fn load_export_refreshes_cached_bpb_and_rejects_mismatched_geometry() {
     assert!(
         disk.slot_mut(1)
             .unwrap()
-            .load_image(&mut Cursor::new(wrong_payload), time())
+            .load_image_with_time(&mut Cursor::new(wrong_payload), time())
             .is_err()
     );
 
@@ -135,7 +186,7 @@ fn load_export_refreshes_cached_bpb_and_rejects_mismatched_geometry() {
     };
     disk.slot_mut(1)
         .unwrap()
-        .load_image(&mut Cursor::new(source.clone()), updated)
+        .load_image_with_time(&mut Cursor::new(source.clone()), updated)
         .unwrap();
     let mut slot = disk.slot(1).unwrap();
     assert_eq!(slot.bpb().root_entries, 96);

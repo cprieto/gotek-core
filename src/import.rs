@@ -3,7 +3,7 @@ use crate::{
     fat12::Bpb,
     inspect::read_sector,
     layout::METADATA_OFFSET_BYTES,
-    metadata::{UpdateTime, encode_update_time},
+    metadata::{UpdateTime, current_local_time, encode_update_time},
 };
 use std::{
     fs::{self, OpenOptions},
@@ -17,8 +17,22 @@ use std::{
 /// filename and defaults to the source basename. Only a single FAT filename is
 /// accepted. `overwrite` truncates an existing regular file before writing.
 /// The image must be an existing regular file, not a symlink or device.
+/// The slot's `UPDATE TIME` uses the current local clock. Use
+/// [`import_file_with_time`] for a caller-supplied timestamp.
 /// Errors during writing can leave partial changes.
 pub fn import_file(
+    image: impl AsRef<Path>,
+    slot: u16,
+    source: impl AsRef<Path>,
+    name: Option<&str>,
+    overwrite: bool,
+) -> Result<(), GotekError> {
+    import_file_with_time(image, slot, source, name, overwrite, current_local_time()?)
+}
+
+/// Import a local file with an explicit Gotek `UPDATE TIME` value.
+/// The same path and overwrite safeguards as [`import_file`] apply.
+pub fn import_file_with_time(
     image: impl AsRef<Path>,
     slot: u16,
     source: impl AsRef<Path>,
@@ -107,7 +121,29 @@ pub(crate) fn validate_import(name: &str, time: UpdateTime) -> Result<[u8; 31], 
 /// BPB payload and its `UPDATE TIME` metadata sector. A write failure can leave
 /// part of either region updated; physical-device writes are not power-failure
 /// atomic. The caller must ensure exclusive access and accurate capacity.
+/// The slot timestamp uses the current local clock; use
+/// [`import_into_with_time`] to supply one explicitly.
 pub fn import_into<T: Read + Write + Seek + ?Sized>(
+    target: &mut T,
+    capacity: u64,
+    slot: u16,
+    name: &str,
+    bytes: &[u8],
+    overwrite: bool,
+) -> Result<(), GotekError> {
+    import_into_with_time(
+        target,
+        capacity,
+        slot,
+        name,
+        bytes,
+        overwrite,
+        current_local_time()?,
+    )
+}
+
+/// Import through a descriptor with an explicit Gotek `UPDATE TIME` value.
+pub fn import_into_with_time<T: Read + Write + Seek + ?Sized>(
     target: &mut T,
     capacity: u64,
     slot: u16,
@@ -118,7 +154,7 @@ pub fn import_into<T: Read + Write + Seek + ?Sized>(
 ) -> Result<(), GotekError> {
     GotekDisk::open(target, capacity)?
         .slot_mut(slot)?
-        .import_file(name, bytes, overwrite, update_time)
+        .import_file_with_time(name, bytes, overwrite, update_time)
 }
 
 fn import_validated_into<T: Read + Write + Seek + ?Sized>(

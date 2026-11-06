@@ -13,7 +13,7 @@ fn image(geometry: FloppyGeometry) -> Cursor<Vec<u8>> {
         minute: 0,
         second: 0,
     };
-    let options = FormatOptions::new(
+    let options = FormatOptions::with_slot_options(
         geometry,
         2,
         SlotFormatOptions {
@@ -411,7 +411,7 @@ fn extraction_symlinks_and_hard_links_do_not_modify_source() {
 
 #[test]
 fn import_round_trip_and_slot_boundaries() {
-    use gotek_core::{extract_file, import_file};
+    use gotek_core::{extract_file, import_file_with_time};
     use std::fs;
     let dir = ExtractionDir::new();
     let image_path = dir.0.join("image.img");
@@ -429,7 +429,7 @@ fn import_round_trip_and_slot_boundaries() {
         minute: 10,
         second: 11,
     };
-    import_file(
+    import_file_with_time(
         image_path.clone(),
         1,
         source.clone(),
@@ -461,7 +461,7 @@ fn import_round_trip_and_slot_boundaries() {
     extract_file(&mut image_file, 1, "A long name.dat", &output).unwrap();
     assert_eq!(fs::read(output).unwrap(), bytes);
     assert!(
-        import_file(
+        import_file_with_time(
             &image_path,
             1,
             &source,
@@ -471,11 +471,13 @@ fn import_round_trip_and_slot_boundaries() {
         )
         .is_err()
     );
-    assert!(import_file(&image_path, 2, &source, None, false, time).is_err());
-    assert!(import_file(&image_path, 1, &source, Some("../escape"), false, time).is_err());
+    assert!(import_file_with_time(&image_path, 2, &source, None, false, time).is_err());
+    assert!(
+        import_file_with_time(&image_path, 1, &source, Some("../escape"), false, time).is_err()
+    );
     assert_eq!(fs::read(&image_path).unwrap(), changed);
     fs::write(&source, b"new").unwrap();
-    import_file(&image_path, 1, &source, Some("A long name.dat"), true, time).unwrap();
+    import_file_with_time(&image_path, 1, &source, Some("A long name.dat"), true, time).unwrap();
     assert_eq!(
         read_file(
             &mut fs::File::open(&image_path).unwrap(),
@@ -530,7 +532,7 @@ fn cli_import_name_force_and_rejections() {
 
 #[test]
 fn import_rejects_oversize_and_symlink_images() {
-    use gotek_core::import_file;
+    use gotek_core::import_file_with_time;
     use std::fs;
     let dir = ExtractionDir::new();
     let image_path = dir.0.join("image.img");
@@ -546,17 +548,17 @@ fn import_rejects_oversize_and_symlink_images() {
         minute: 0,
         second: 0,
     };
-    assert!(import_file(&image_path, 1, &source, None, false, time).is_err());
+    assert!(import_file_with_time(&image_path, 1, &source, None, false, time).is_err());
     assert_eq!(fs::read(&image_path).unwrap(), before);
     fs::write(&source, vec![1; 731_000]).unwrap();
-    assert!(import_file(&image_path, 1, &source, None, false, time).is_err());
+    assert!(import_file_with_time(&image_path, 1, &source, None, false, time).is_err());
     assert_eq!(fs::read(&image_path).unwrap(), before);
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
         let link = dir.0.join("link.img");
         symlink(&image_path, &link).unwrap();
-        assert!(import_file(&link, 1, &source, None, false, time).is_err());
+        assert!(import_file_with_time(&link, 1, &source, None, false, time).is_err());
     }
 }
 
@@ -579,7 +581,7 @@ fn import_accepts_non_utf8_host_path_with_explicit_fat_name() {
         minute: 10,
         second: 11,
     };
-    gotek_core::import_file(
+    gotek_core::import_file_with_time(
         image_path.clone(),
         1,
         source.clone(),
@@ -596,7 +598,7 @@ fn import_accepts_non_utf8_host_path_with_explicit_fat_name() {
 
 #[test]
 fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
-    use gotek_core::import_into;
+    use gotek_core::import_into_with_time;
     let mut image = image(FloppyGeometry::Kb720);
     let before = image.get_ref().clone();
     let capacity = before.len() as u64;
@@ -609,7 +611,7 @@ fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
         second: 11,
     };
     assert!(matches!(
-        import_into(
+        import_into_with_time(
             &mut image,
             capacity - 1024,
             1,
@@ -622,11 +624,11 @@ fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
     ));
     assert_eq!(image.get_ref(), &before);
     assert!(matches!(
-        import_into(&mut image, capacity, 2, "hello.txt", b"hello", false, time),
+        import_into_with_time(&mut image, capacity, 2, "hello.txt", b"hello", false, time),
         Err(GotekError::InvalidSlot { .. })
     ));
     assert_eq!(image.get_ref(), &before);
-    import_into(
+    import_into_with_time(
         &mut image,
         capacity,
         1,
@@ -641,7 +643,7 @@ fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
         b"hello"
     );
     assert!(
-        import_into(
+        import_into_with_time(
             &mut image,
             capacity,
             1,
@@ -652,7 +654,7 @@ fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
         )
         .is_err()
     );
-    import_into(
+    import_into_with_time(
         &mut image,
         capacity,
         1,
@@ -670,5 +672,36 @@ fn descriptor_import_reuses_fat12_rules_and_checks_capacity() {
     assert_eq!(
         &image.get_ref()[2 * SLOT_STRIDE_BYTES as usize..],
         &before[2 * SLOT_STRIDE_BYTES as usize..]
+    );
+}
+
+#[test]
+fn path_and_descriptor_imports_accept_default_timestamps() {
+    use gotek_core::{import_file, import_into};
+    let directory = ExtractionDir::new();
+    let path = directory.0.join("disk.img");
+    let source = directory.0.join("AUTO.TXT");
+    std::fs::write(&path, image(FloppyGeometry::Kb720).into_inner()).unwrap();
+    std::fs::write(&source, b"from path").unwrap();
+    import_file(&path, 1, &source, None, false).unwrap();
+    assert_eq!(
+        read_file(&mut std::fs::File::open(&path).unwrap(), 1, "AUTO.TXT").unwrap(),
+        b"from path"
+    );
+
+    let mut disk = image(FloppyGeometry::Kb720);
+    let capacity = disk.get_ref().len() as u64;
+    import_into(
+        &mut disk,
+        capacity,
+        1,
+        "AUTO.TXT",
+        b"from descriptor",
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_file(&mut disk, 1, "AUTO.TXT").unwrap(),
+        b"from descriptor"
     );
 }
