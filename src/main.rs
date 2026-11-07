@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use gotek_core::{
-    FormatOptions, GotekImageInfo, SlotInfo, ValidationWarning, create_image,
-    format_existing_image, geometry::FloppyGeometry, inspect, list_files, read_file,
+    FormatOptions, FormatProgress, GotekImageInfo, SlotInfo, ValidationWarning,
+    create_image_with_progress, format_existing_image_with_progress, geometry::FloppyGeometry,
+    inspect, list_files, read_file,
 };
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
@@ -188,7 +189,35 @@ fn main() -> Result<(), Box<dyn Error>> {
             force,
         } => {
             let options = FormatOptions::new(size.into(), floppies)?;
-            let bytes = initialize_image(&path, &options, force)?;
+            let terminal = io::stdout().is_terminal();
+            let mut completed = 0;
+            println!("Formatting {floppies} virtual floppies...");
+            let result = initialize_image(&path, &options, force, |progress| {
+                completed = progress.completed_slots;
+                if terminal {
+                    print!(
+                        "\rFormatted {}/{}",
+                        progress.completed_slots, progress.total_slots
+                    );
+                    let _ = io::stdout().flush();
+                } else {
+                    println!(
+                        "Formatted {}/{}",
+                        progress.completed_slots, progress.total_slots
+                    );
+                }
+                if completed == progress.total_slots {
+                    if terminal {
+                        println!();
+                    }
+                    println!("Finalizing...");
+                }
+            });
+            if terminal && completed > 0 && completed < floppies {
+                println!();
+            }
+            let bytes = result?;
+            println!("Formatting completed successfully.");
             let action = if force { "Initialized" } else { "Created" };
             println!(
                 "{action} {}: {} floppy slots, {} each, {} bytes",
@@ -288,6 +317,7 @@ fn initialize_image(
     path: &Path,
     options: &FormatOptions,
     force: bool,
+    progress: impl FnMut(FormatProgress),
 ) -> Result<u64, Box<dyn Error>> {
     let required_bytes = options.image_size_bytes()?;
     match fs::symlink_metadata(path) {
@@ -296,17 +326,18 @@ fn initialize_image(
                 // Never truncate or append: the formatter only replaces the prefix
                 // needed by the requested slots and their boundary sector.
                 let mut image = OpenOptions::new().write(true).open(path)?;
-                format_existing_image(&mut image, options)?;
+                format_existing_image_with_progress(&mut image, options, progress)?;
+                image.sync_all()?;
                 return Ok(image.metadata()?.len());
             }
-            create_image(path, options)?;
+            create_image_with_progress(path, options, progress)?;
         }
         Ok(metadata) => {
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::fs::FileTypeExt;
                 if metadata.file_type().is_block_device() {
-                    return linux_device::format_device(path, &metadata, options, force);
+                    return linux_device::format_device(path, &metadata, options, force, progress);
                 }
             }
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination must be a regular image file or a whole USB block device; symlinks and other file types are refused").into());
@@ -315,7 +346,7 @@ fn initialize_image(
             if is_device_namespace(path)? {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "refusing to create a missing path under /dev; select an existing USB block device").into());
             }
-            create_image(path, options)?;
+            create_image_with_progress(path, options, progress)?;
         }
         Err(error) => return Err(error.into()),
     }

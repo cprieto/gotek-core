@@ -65,6 +65,18 @@ pub struct FormatOptions {
     pub slots: Vec<SlotFormatOptions>,
 }
 
+/// Number of virtual floppy slots successfully written during formatting.
+///
+/// The boundary sector and final flush follow the last slot callback, so
+/// `completed_slots == total_slots` does not by itself indicate success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatProgress {
+    /// Slots whose complete contents, including metadata, have been written.
+    pub completed_slots: u16,
+    /// Declared number of slots in the format operation.
+    pub total_slots: u16,
+}
+
 impl FormatOptions {
     /// Create formatting options using the current local time and generated serials.
     ///
@@ -189,7 +201,7 @@ pub fn generate_boot_sector(
 /// This is the recommended disk-file entry point. `create_new` also refuses an
 /// existing device path or symlink. All options are checked before file creation.
 /// An I/O failure can leave a partial file, which the caller may inspect or remove.
-/// The image is flushed, but no durable-storage synchronization is requested.
+/// The image is flushed and synchronized before success is reported.
 ///
 /// ```no_run
 /// use gotek_core::{FormatOptions, create_image, geometry::FloppyGeometry};
@@ -199,13 +211,29 @@ pub fn generate_boot_sector(
 /// # Ok::<(), gotek_core::GotekError>(())
 /// ```
 pub fn create_image(path: impl AsRef<Path>, options: &FormatOptions) -> Result<(), GotekError> {
-    options.image_size_bytes()?;
+    create_image_with_progress(path, options, |_| {})
+}
+
+/// Create a new image and report each completed virtual floppy slot.
+///
+/// No callbacks occur during validation. Completion of the last slot precedes
+/// writing the extra boundary sector and flushing the image.
+pub fn create_image_with_progress(
+    path: impl AsRef<Path>,
+    options: &FormatOptions,
+    progress: impl FnMut(FormatProgress),
+) -> Result<(), GotekError> {
+    let image_size = options.image_size_bytes()?;
     let mut image = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|source| GotekError::Io { offset: 0, source })?;
-    format_image(&mut image, options)
+    format_image_with_progress(&mut image, options, progress)?;
+    image.sync_all().map_err(|source| GotekError::Io {
+        offset: image_size,
+        source,
+    })
 }
 
 /// Initialize an empty image with observed ipcas structures and an original diagnostic stub.
@@ -225,6 +253,18 @@ pub fn format_image<W: Write + Seek + ?Sized>(
     writer: &mut W,
     options: &FormatOptions,
 ) -> Result<(), GotekError> {
+    format_image_with_progress(writer, options, |_| {})
+}
+
+/// Format an empty writer and report each completed virtual floppy slot.
+///
+/// No callback is made before all options and the empty destination have been
+/// validated. The boundary sector and final flush follow the last callback.
+pub fn format_image_with_progress<W: Write + Seek + ?Sized>(
+    writer: &mut W,
+    options: &FormatOptions,
+    progress: impl FnMut(FormatProgress),
+) -> Result<(), GotekError> {
     let image_size = options.image_size_bytes()?;
     // Prepare every slot before touching the destination, so errors in a later
     // slot's options can never leave an image that is only partly configured.
@@ -235,7 +275,7 @@ pub fn format_image<W: Write + Seek + ?Sized>(
     if length != 0 {
         return Err(GotekError::OutputNotEmpty(length));
     }
-    write_prepared_image(writer, image_size, &prepared_slots)
+    write_prepared_image(writer, image_size, &prepared_slots, progress)
 }
 
 /// Reinitialize an existing regular image file without changing its total size.
@@ -250,13 +290,34 @@ pub fn format_image<W: Write + Seek + ?Sized>(
 /// concurrent file changes during formatting. An I/O failure can leave a partial
 /// image; successful writes are flushed but not synchronized to durable storage.
 pub fn format_existing_image(image: &mut File, options: &FormatOptions) -> Result<(), GotekError> {
+    format_existing_image_with_progress(image, options, |_| {})
+}
+
+/// Reinitialize a regular image file and report each completed slot.
+///
+/// ```no_run
+/// use gotek_core::{FormatOptions, format_existing_image_with_progress, geometry::FloppyGeometry};
+/// use std::fs::OpenOptions;
+///
+/// let options = FormatOptions::new(FloppyGeometry::Mb1440, 50)?;
+/// let mut image = OpenOptions::new().write(true).open("image.img")?;
+/// format_existing_image_with_progress(&mut image, &options, |progress| {
+///     println!("Formatted {}/{} floppies", progress.completed_slots, progress.total_slots);
+/// })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn format_existing_image_with_progress(
+    image: &mut File,
+    options: &FormatOptions,
+    progress: impl FnMut(FormatProgress),
+) -> Result<(), GotekError> {
     let metadata = image
         .metadata()
         .map_err(|source| GotekError::Io { offset: 0, source })?;
     if !metadata.is_file() {
         return Err(GotekError::NotRegularFile);
     }
-    format_on(image, metadata.len(), options)
+    format_on_with_progress(image, metadata.len(), options, progress)
 }
 
 /// Reinitialize an already-open target using an explicit verified capacity.
@@ -270,6 +331,20 @@ pub fn format_on<W: Write + Seek + ?Sized>(
     capacity: u64,
     options: &FormatOptions,
 ) -> Result<(), GotekError> {
+    format_on_with_progress(writer, capacity, options, |_| {})
+}
+
+/// Format an already-open target and report each completed virtual floppy slot.
+///
+/// Callbacks run synchronously after each slot is written. A callback for the
+/// final slot precedes the boundary-sector write and final flush. Physical
+/// device writes are not power-failure atomic.
+pub fn format_on_with_progress<W: Write + Seek + ?Sized>(
+    writer: &mut W,
+    capacity: u64,
+    options: &FormatOptions,
+    progress: impl FnMut(FormatProgress),
+) -> Result<(), GotekError> {
     let image_size = options.image_size_bytes()?;
     let prepared_slots = prepare_slots(options)?;
     if capacity < image_size {
@@ -278,19 +353,21 @@ pub fn format_on<W: Write + Seek + ?Sized>(
             required_bytes: image_size,
         });
     }
-    write_prepared_image(writer, image_size, &prepared_slots)
+    write_prepared_image(writer, image_size, &prepared_slots, progress)
 }
 
 fn write_prepared_image<W: Write + Seek + ?Sized>(
     writer: &mut W,
     image_size: u64,
     prepared_slots: &[PreparedSlot],
+    mut progress: impl FnMut(FormatProgress),
 ) -> Result<(), GotekError> {
     writer
         .seek(SeekFrom::Start(0))
         .map_err(|source| GotekError::Io { offset: 0, source })?;
     let mut position = 0;
-    for slot in prepared_slots {
+    let total_slots = prepared_slots.len() as u16;
+    for (index, slot) in prepared_slots.iter().enumerate() {
         write_bytes(writer, &mut position, image_size, &slot.boot_sector)?;
         for _ in 0..2 {
             write_bytes(
@@ -315,6 +392,10 @@ fn write_prepared_image<W: Write + Seek + ?Sized>(
         write_fill(writer, &mut position, image_size, 0, SECTOR_BYTES as u64)?;
         write_fill(writer, &mut position, image_size, 0, slot.gap_bytes)?;
         write_bytes(writer, &mut position, image_size, &slot.metadata)?;
+        progress(FormatProgress {
+            completed_slots: index as u16 + 1,
+            total_slots,
+        });
     }
     let last_slot = prepared_slots
         .last()

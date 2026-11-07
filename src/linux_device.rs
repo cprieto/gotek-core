@@ -1,5 +1,5 @@
 //! Linux-only safety checks for CLI formatting of whole USB block devices.
-use gotek_core::{FormatOptions, format_on};
+use gotek_core::{FormatOptions, FormatProgress, format_on_with_progress};
 use std::{
     collections::HashSet,
     error::Error,
@@ -223,6 +223,7 @@ pub(super) fn format_device(
     initial: &Metadata,
     options: &FormatOptions,
     force: bool,
+    progress: impl FnMut(FormatProgress),
 ) -> Result<u64, Box<dyn Error>> {
     let required = options.image_size_bytes()?;
     if !force {
@@ -257,7 +258,7 @@ pub(super) fn format_device(
         capacity,
         required,
     };
-    format_checked(&mut device, path, options, checks)?;
+    format_checked(&mut device, path, options, checks, progress)?;
     device.sync_all()?;
     Ok(capacity)
 }
@@ -267,6 +268,7 @@ fn format_checked<W: io::Write + io::Seek>(
     path: &Path,
     options: &FormatOptions,
     checks: DeviceChecks,
+    progress: impl FnMut(FormatProgress),
 ) -> Result<(), Box<dyn Error>> {
     validate(
         checks.force,
@@ -282,7 +284,7 @@ fn format_checked<W: io::Write + io::Seek>(
         options.slots.len(),
         options.geometry
     );
-    format_on(target, checks.capacity, options)?;
+    format_on_with_progress(target, checks.capacity, options, progress)?;
     Ok(())
 }
 
@@ -451,12 +453,38 @@ mod tests {
                         identity_matches: identity,
                         capacity,
                         required
-                    }
+                    },
+                    |_| {}
                 )
                 .is_err()
             );
             assert_eq!(target.into_inner(), before);
         }
+    }
+
+    #[test]
+    fn checked_device_formatter_reports_completed_slots() {
+        let options = FormatOptions::new(FloppyGeometry::Kb720, 2).unwrap();
+        let required = options.image_size_bytes().unwrap();
+        let mut target = Cursor::new(vec![0; required as usize]);
+        let mut progress = Vec::new();
+        format_checked(
+            &mut target,
+            Path::new("/dev/mock"),
+            &options,
+            DeviceChecks {
+                force: true,
+                safety: safe(),
+                identity_matches: true,
+                capacity: required,
+                required,
+            },
+            |report| progress.push(report),
+        )
+        .unwrap();
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].completed_slots, 1);
+        assert_eq!(progress[1].completed_slots, 2);
     }
 
     #[test]

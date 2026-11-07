@@ -6,9 +6,11 @@ use std::{
 };
 
 use gotek_core::{
-    FormatOptions, GotekError, SlotFormatOptions, create_image,
+    FormatOptions, FormatProgress, GotekError, SlotFormatOptions, create_image,
+    create_image_with_progress,
     fat12::Bpb,
-    format_image, format_on, generate_boot_sector,
+    format_existing_image, format_existing_image_with_progress, format_image,
+    format_image_with_progress, format_on, format_on_with_progress, generate_boot_sector,
     geometry::FloppyGeometry,
     inspect,
     layout::{METADATA_OFFSET_BYTES, SECTOR_BYTES, SLOT_STRIDE_BYTES, slot_offset},
@@ -598,6 +600,126 @@ fn short_writes_stay_within_the_image_and_io_failures_preserve_the_source() {
     assert_eq!(writer.length, writer.limit);
 }
 
+#[test]
+fn progress_reports_completed_slots_and_preserves_boundary_bytes() {
+    let options = options(FloppyGeometry::Kb720, 3);
+    let mut image = Cursor::new(Vec::new());
+    let mut reports = Vec::new();
+    format_image_with_progress(&mut image, &options, |progress| reports.push(progress)).unwrap();
+    assert_eq!(
+        reports,
+        (1..=3)
+            .map(|completed_slots| FormatProgress {
+                completed_slots,
+                total_slots: 3,
+            })
+            .collect::<Vec<_>>()
+    );
+    let bytes = image.into_inner();
+    let boundary = (3 * SLOT_STRIDE_BYTES) as usize;
+    let last_boot = (2 * SLOT_STRIDE_BYTES) as usize;
+    assert_eq!(&bytes[boundary..boundary + 3], &[0, 0, 0]);
+    assert_eq!(
+        &bytes[boundary + 3..boundary + SECTOR_BYTES],
+        &bytes[last_boot + 3..last_boot + SECTOR_BYTES]
+    );
+
+    let mut legacy = Cursor::new(Vec::new());
+    format_image(&mut legacy, &options).unwrap();
+    assert_eq!(bytes, legacy.into_inner());
+}
+
+#[test]
+fn progress_stops_at_failed_write_and_never_runs_during_validation() {
+    let options = options(FloppyGeometry::Kb720, 2);
+    let required = options.image_size_bytes().unwrap();
+    let mut reports = Vec::new();
+    let mut invalid = options.clone();
+    invalid.slots[1].update_time.month = 0;
+    assert!(
+        format_image_with_progress(&mut Cursor::new(Vec::new()), &invalid, |p| reports.push(p))
+            .is_err()
+    );
+    assert!(
+        format_on_with_progress(&mut Cursor::new(Vec::new()), required - 1, &options, |p| {
+            reports.push(p)
+        })
+        .is_err()
+    );
+    assert!(reports.is_empty());
+
+    for (failure, completed) in [
+        (SLOT_STRIDE_BYTES - 1, 0),
+        (SLOT_STRIDE_BYTES + 100, 1),
+        (2 * SLOT_STRIDE_BYTES, 2),
+    ] {
+        let mut writer = CheckedWriter {
+            position: 0,
+            length: 0,
+            limit: required,
+            fail_after: Some(failure),
+            fail_seek: false,
+            fail_flush: false,
+        };
+        reports.clear();
+        assert!(format_image_with_progress(&mut writer, &options, |p| reports.push(p)).is_err());
+        assert_eq!(reports.len(), completed);
+        assert!(
+            reports
+                .iter()
+                .enumerate()
+                .all(|(index, p)| p.completed_slots == index as u16 + 1 && p.total_slots == 2)
+        );
+    }
+
+    let mut writer = CheckedWriter {
+        position: 0,
+        length: 0,
+        limit: required,
+        fail_after: None,
+        fail_seek: false,
+        fail_flush: true,
+    };
+    reports.clear();
+    assert!(format_image_with_progress(&mut writer, &options, |p| reports.push(p)).is_err());
+    assert_eq!(reports.last().unwrap().completed_slots, 2);
+}
+
+#[test]
+fn progress_aware_entry_points_match_existing_formatters() {
+    let options = options(FloppyGeometry::Mb1440, 1);
+    let required = options.image_size_bytes().unwrap();
+
+    let mut old_target = Cursor::new(vec![0x5a; required as usize + 8]);
+    let mut new_target = Cursor::new(vec![0x5a; required as usize + 8]);
+    format_on(&mut old_target, required, &options).unwrap();
+    format_on_with_progress(&mut new_target, required, &options, |_| {}).unwrap();
+    assert_eq!(old_target.into_inner(), new_target.into_inner());
+
+    let mut old_file = TemporaryImage::new();
+    let mut new_file = TemporaryImage::new();
+    old_file.file().set_len(required + 8).unwrap();
+    new_file.file().set_len(required + 8).unwrap();
+    format_existing_image(old_file.file(), &options).unwrap();
+    format_existing_image_with_progress(new_file.file(), &options, |_| {}).unwrap();
+    assert_eq!(
+        fs::read(&old_file.path).unwrap(),
+        fs::read(&new_file.path).unwrap()
+    );
+
+    let old_created = TemporaryImage::new();
+    let new_created = TemporaryImage::new();
+    let old_path = old_created.path.clone();
+    let new_path = new_created.path.clone();
+    drop(old_created);
+    drop(new_created);
+    create_image(&old_path, &options).unwrap();
+    create_image_with_progress(&new_path, &options, |_| {}).unwrap();
+    assert_eq!(fs::read(&old_path).unwrap(), fs::read(&new_path).unwrap());
+    fs::remove_file(old_path).unwrap();
+    fs::remove_file(new_path).unwrap();
+}
+
 fn compare_capture(name: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
     let mut reference = match File::open(path) {
@@ -628,7 +750,12 @@ fn compare_capture(name: &str) {
         slots,
     };
     let mut generated = TemporaryImage::new();
-    format_image(generated.file(), &options).unwrap();
+    let mut reports = Vec::new();
+    format_image_with_progress(generated.file(), &options, |progress| {
+        reports.push(progress)
+    })
+    .unwrap();
+    assert_eq!(reports.len(), options.slots.len());
     reference.seek(SeekFrom::Start(0)).unwrap();
     generated.file().seek(SeekFrom::Start(0)).unwrap();
     let mut remaining = options.image_size_bytes().unwrap();

@@ -47,6 +47,23 @@ fn init(path: &std::path::Path, count: &str, size: &str, force: bool) -> Output 
 }
 
 #[test]
+fn init_reports_each_slot_then_finalizes_before_success() {
+    let directory = TestDirectory::new();
+    let output = init(&directory.image(), "2", "720k", false);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Formatting 2 virtual floppies...\n"));
+    assert!(stdout.contains("Formatted 1/2\nFormatted 2/2\nFinalizing...\n"));
+    assert!(stdout.contains("Finalizing...\nFormatting completed successfully.\n"));
+
+    let failed = init(&directory.image(), "2", "720k", false);
+    assert!(!failed.status.success());
+    let stdout = String::from_utf8(failed.stdout).unwrap();
+    assert!(!stdout.contains("Formatted 1/2"));
+    assert!(!stdout.contains("Formatting completed successfully."));
+}
+
+#[test]
 fn force_formats_each_geometry_preserving_length_and_trailing_bytes() {
     for (size, geometry, count) in [
         ("720k", FloppyGeometry::Kb720, 1),
