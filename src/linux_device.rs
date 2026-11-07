@@ -127,7 +127,11 @@ fn members_and_holders(sysfs: &Path) -> io::Result<(HashSet<String>, bool)> {
         .transpose()?
         .is_some();
     for entry in fs::read_dir(sysfs)? {
-        let path = entry?.path();
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
         if path.join("partition").try_exists()? {
             members.insert(fs::read_to_string(path.join("dev"))?.trim().to_owned());
             held |= fs::read_dir(path.join("holders"))?
@@ -363,6 +367,31 @@ mod tests {
         let mountinfo = "1 0 8:17 / /media/usb rw - vfat /dev/sdb1 rw\n";
         assert!(has_mounted_member(mountinfo, &members).unwrap());
         assert!(!has_mounted_member("1 0 8:32 / / rw - ext4 /dev/sdc rw\n", &members).unwrap());
+    }
+
+    #[test]
+    fn sysfs_scan_skips_regular_files_and_finds_partitions() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let folder = std::env::temp_dir().join(format!(
+            "gotek-sysfs-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&folder).unwrap();
+        fs::create_dir(folder.join("holders")).unwrap();
+        fs::write(folder.join("dev"), b"8:48\n").unwrap();
+        fs::write(folder.join("size"), b"12345\n").unwrap();
+        let partition = folder.join("sdd1");
+        fs::create_dir(&partition).unwrap();
+        fs::create_dir(partition.join("holders")).unwrap();
+        fs::write(partition.join("partition"), b"1\n").unwrap();
+        fs::write(partition.join("dev"), b"8:49\n").unwrap();
+
+        let (members, held) = members_and_holders(&folder).unwrap();
+        assert_eq!(members, HashSet::from(["8:48".into(), "8:49".into()]));
+        assert!(!held);
+        fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
